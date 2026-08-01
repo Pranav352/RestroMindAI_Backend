@@ -65,8 +65,9 @@ class CategorySerializer(serializers.ModelSerializer):
 
     def validate_restaurant(self, value):
         request = self.context.get('request')
-        if request and value.owner != request.user:
-            raise serializers.ValidationError("You do not own this restaurant.")
+        if request and hasattr(request, 'tenant_id'):
+            if value.id != request.tenant_id:
+                raise serializers.ValidationError("You can only create categories for your active restaurant.")
         return value
 
 
@@ -88,8 +89,9 @@ class MenuItemSerializer(serializers.ModelSerializer):
 
     def validate_category(self, value):
         request = self.context.get('request')
-        if request and value.restaurant.owner != request.user:
-            raise serializers.ValidationError("This category belongs to a restaurant you do not own.")
+        if request and hasattr(request, 'tenant_id'):
+            if value.restaurant.id != request.tenant_id:
+                raise serializers.ValidationError("This category belongs to a different restaurant.")
         return value
 
 
@@ -114,8 +116,9 @@ class TableSerializer(serializers.ModelSerializer):
 
     def validate_restaurant(self, value):
         request = self.context.get('request')
-        if request and value.owner != request.user:
-            raise serializers.ValidationError("You do not own this restaurant.")
+        if request and hasattr(request, 'tenant_id'):
+            if value.id != request.tenant_id:
+                raise serializers.ValidationError("You can only create tables for your active restaurant.")
         return value
 
     def validate_table_number(self, value):
@@ -277,8 +280,8 @@ class OrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ('id', 'restaurant', 'table_number', 'customer_name', 'status', 'total_price', 'items', 'created_at', 'updated_at')
-        read_only_fields = ('total_price', 'created_at', 'updated_at')
+        fields = ('id', 'restaurant', 'table_number', 'customer_name', 'status', 'total_price', 'items', 'tracking_token', 'created_at', 'updated_at')
+        read_only_fields = ('total_price', 'tracking_token', 'created_at', 'updated_at')
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')

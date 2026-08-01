@@ -12,7 +12,7 @@ except ImportError:
     qrcode = None
 
 from .models import Restaurant, Category, MenuItem, Table, Order, OrderItem
-from .permissions import IsRestaurantOwner, IsSystemAdmin
+from .permissions import IsRestaurantOwner, IsSystemAdmin, HasTenantAccess
 from users.permissions import HasActiveSubscription
 from .serializers import (
     RestaurantSerializer,
@@ -34,7 +34,13 @@ class RestaurantViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsRestaurantOwner, HasActiveSubscription]
 
     def get_queryset(self):
-        return Restaurant.objects.filter(owner=self.request.user)
+        user = self.request.user
+        if user.is_staff or user.role == 'admin':
+            tenant_id = self.request.headers.get('X-Tenant-ID')
+            if tenant_id:
+                return Restaurant.objects.filter(id=tenant_id)
+            return Restaurant.objects.all()
+        return Restaurant.objects.filter(owner=user)
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
@@ -42,19 +48,23 @@ class RestaurantViewSet(viewsets.ModelViewSet):
 
 class CategoryViewSet(viewsets.ModelViewSet):
     serializer_class = CategorySerializer
-    permission_classes = [permissions.IsAuthenticated, IsRestaurantOwner, HasActiveSubscription]
+    permission_classes = [permissions.IsAuthenticated, HasTenantAccess, HasActiveSubscription]
 
     def get_queryset(self):
-        return Category.objects.filter(restaurant__owner=self.request.user)
+        if hasattr(self.request, 'tenant_id'):
+            return Category.objects.filter(restaurant_id=self.request.tenant_id)
+        return Category.objects.none()
 
 
 class MenuItemViewSet(viewsets.ModelViewSet):
     serializer_class = MenuItemSerializer
-    permission_classes = [permissions.IsAuthenticated, IsRestaurantOwner, HasActiveSubscription]
+    permission_classes = [permissions.IsAuthenticated, HasTenantAccess, HasActiveSubscription]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        return MenuItem.objects.filter(category__restaurant__owner=self.request.user)
+        if hasattr(self.request, 'tenant_id'):
+            return MenuItem.objects.filter(category__restaurant_id=self.request.tenant_id)
+        return MenuItem.objects.none()
 
 
 class QRGenerateView(APIView):
@@ -137,11 +147,13 @@ class QRGenerateView(APIView):
 
 class QRDetailView(generics.RetrieveAPIView):
     serializer_class = TableSerializer
-    permission_classes = [permissions.IsAuthenticated, IsRestaurantOwner]
+    permission_classes = [permissions.IsAuthenticated, HasTenantAccess]
     queryset = Table.objects.all()
 
     def get_queryset(self):
-        return Table.objects.filter(restaurant__owner=self.request.user)
+        if hasattr(self.request, 'tenant_id'):
+            return Table.objects.filter(restaurant_id=self.request.tenant_id)
+        return Table.objects.none()
 
 
 class PublicMenuView(APIView):
@@ -267,22 +279,29 @@ class OrderViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['create', 'status', 'cancel']:
             return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated(), IsRestaurantOwner(), HasActiveSubscription()]
+        return [permissions.IsAuthenticated(), HasTenantAccess(), HasActiveSubscription()]
 
     def get_queryset(self):
-        # Allow restaurant owners to see orders for their own restaurants
-        return Order.objects.filter(restaurant__owner=self.request.user)
+        if hasattr(self.request, 'tenant_id'):
+            return Order.objects.filter(restaurant_id=self.request.tenant_id)
+        return Order.objects.none()
 
     from rest_framework.decorators import action
-    @action(detail=True, methods=['get'], permission_classes=[permissions.AllowAny])
-    def status(self, request, pk=None):
-        order = get_object_or_404(Order, pk=pk)
+    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    def status(self, request):
+        token = request.query_params.get('token')
+        if not token:
+            return Response({"error": "Tracking token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        order = get_object_or_404(Order, tracking_token=token)
         serializer = self.get_serializer(order)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.AllowAny])
-    def cancel(self, request, pk=None):
-        order = get_object_or_404(Order, pk=pk)
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def cancel(self, request):
+        token = request.data.get('token')
+        if not token:
+            return Response({"error": "Tracking token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        order = get_object_or_404(Order, tracking_token=token)
         if order.status != 'pending':
             return Response(
                 {"error": "Only pending orders can be cancelled."},
@@ -295,14 +314,18 @@ class OrderViewSet(viewsets.ModelViewSet):
 
 
 class OwnerDashboardStatsView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsRestaurantOwner]
+    permission_classes = [permissions.IsAuthenticated, HasTenantAccess]
 
     def get(self, request):
         from django.utils import timezone
         from django.db.models import Sum
 
-        # Get user's first restaurant (assuming one restaurant per owner)
-        restaurant = Restaurant.objects.filter(owner=request.user).first()
+        tenant_id = getattr(request, 'tenant_id', None)
+        if not tenant_id:
+            restaurant = None
+        else:
+            restaurant = Restaurant.objects.filter(id=tenant_id).first()
+            
         if not restaurant:
             return Response({
                 "has_restaurant": False,
