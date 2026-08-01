@@ -179,6 +179,11 @@ else:
         CORS_ALLOW_ALL_ORIGINS = False
         CORS_ALLOWED_ORIGINS = []
 
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'X-Tenant-ID',
+]
+
 # DRF Config
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
