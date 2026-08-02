@@ -64,6 +64,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',  # MUST be at the top
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -99,12 +100,14 @@ db_password = os.getenv('DB_PASSWORD')
 db_host = os.getenv('DB_HOST', 'localhost')
 db_port = os.getenv('DB_PORT', '5432')
 
+# Validate required database environment variables in production mode
 if not DEBUG and (not db_name or not db_user or not db_password):
     from django.core.exceptions import ImproperlyConfigured
     raise ImproperlyConfigured(
         "PostgreSQL environment variables (DB_NAME, DB_USER, DB_PASSWORD) must be configured in production."
     )
 
+# Single base DATABASES configuration dictionary for both development and production
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -116,6 +119,11 @@ DATABASES = {
     }
 }
 
+# Production settings: Enable SSL mode required by Neon PostgreSQL when DEBUG=False
+if not DEBUG:
+    DATABASES['default']['OPTIONS'] = {
+        'sslmode': 'require',
+    }
 
 
 # Password validation
@@ -154,6 +162,20 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# WhiteNoise storage configuration for serving static files efficiently in production
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+# Trust X-Forwarded-Proto header from Render's reverse proxy for HTTPS detection
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
 MEDIA_URL = '/media/'
