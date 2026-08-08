@@ -30,14 +30,19 @@ if not SECRET_KEY:
 
 # SECURITY WARNING: define allowed hosts in production!
 ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
+render_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', '')
+
 if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',') if host.strip()]
+elif render_host:
+    ALLOWED_HOSTS = [render_host, '.onrender.com']
 else:
     if DEBUG:
         ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]']
     else:
-        from django.core.exceptions import ImproperlyConfigured
-        raise ImproperlyConfigured("The ALLOWED_HOSTS environment variable must be set in production mode.")
+        # Default to allowing onrender.com hostnames if running on Render platform
+        ALLOWED_HOSTS = ['.onrender.com']
+
 
 
 # Application definition
