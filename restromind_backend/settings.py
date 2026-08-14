@@ -219,7 +219,12 @@ else:
         CORS_ALLOW_ALL_ORIGINS = True
     else:
         CORS_ALLOW_ALL_ORIGINS = False
-        CORS_ALLOWED_ORIGINS = []
+        CORS_ALLOWED_ORIGINS = [
+            'https://restro-mind-ai-frontend.vercel.app',
+        ]
+        frontend_url = os.getenv('FRONTEND_BASE_URL', '')
+        if frontend_url and frontend_url not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(frontend_url)
 
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [

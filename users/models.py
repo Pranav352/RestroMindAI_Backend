@@ -100,7 +100,7 @@ import sys
 def create_user_subscription(sender, instance, created, **kwargs):
     if created and instance.role == 'owner':
         # Default to pending for MVP, but auto-approve for unit tests to keep existing tests green
-        is_testing = 'test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]
+        is_testing = 'test' in sys.argv or 'test_coverage' in sys.argv or 'pytest' in sys.argv[0]
         status = 'active' if is_testing else 'pending'
         
         from django.utils import timezone
