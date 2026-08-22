@@ -278,7 +278,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
 
     def get_permissions(self):
-        if self.action in ['create', 'status', 'cancel']:
+        if self.action in ['create', 'status', 'cancel', 'check_table']:
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated(), HasTenantAccess(), HasActiveSubscription()]
 
@@ -301,6 +301,53 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order.recalculate_total()
             elif new_status == 'completed':
                 order.items.exclude(status='cancelled').update(status='served')
+
+    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    def check_table(self, request):
+        """Check if a table currently has an active open order and verify table host status."""
+        restaurant_id = request.query_params.get('restaurant_id')
+        table_number = request.query_params.get('table_number')
+        token = request.query_params.get('token')
+
+        if not restaurant_id or not table_number:
+            return Response(
+                {"error": "restaurant_id and table_number query params are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            table_number = int(table_number)
+            restaurant_id = int(restaurant_id)
+        except ValueError:
+            return Response(
+                {"error": "restaurant_id and table_number must be integers."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        active_order = Order.objects.filter(
+            restaurant_id=restaurant_id,
+            table_number=table_number,
+            status__in=['pending', 'preparing', 'served']
+        ).first()
+
+        if active_order:
+            is_table_host = bool(token and str(active_order.tracking_token) == str(token))
+            return Response({
+                "is_occupied": True,
+                "is_table_host": is_table_host,
+                "table_number": table_number,
+                "order_id": active_order.id,
+                "order_status": active_order.status,
+                "tracking_token": str(active_order.tracking_token) if is_table_host else None
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            "is_occupied": False,
+            "is_table_host": False,
+            "table_number": table_number,
+            "order_id": None,
+            "order_status": None
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def status(self, request):
