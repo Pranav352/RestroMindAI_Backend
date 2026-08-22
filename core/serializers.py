@@ -351,6 +351,17 @@ class OrderSerializer(serializers.ModelSerializer):
         # Standard new order creation (Round 1)
         table_number = validated_data.get('table_number')
         if table_number:
+            # Check if table is currently occupied with an active dining session
+            occupied_order = Order.objects.filter(
+                restaurant=restaurant,
+                table_number=table_number,
+                status__in=['pending', 'preparing', 'served']
+            ).first()
+            if occupied_order:
+                raise serializers.ValidationError({
+                    "table_number": f"Table {table_number} currently has an active dining session. Extra items can be ordered from the table's primary device."
+                })
+
             Table.objects.get_or_create(restaurant=restaurant, table_number=table_number)
 
         order = Order.objects.create(**validated_data)
