@@ -349,6 +349,11 @@ class OrderSerializer(serializers.ModelSerializer):
             return existing_order
 
         # Standard new order creation (Round 1)
+        customer_name = validated_data.get('customer_name', '').strip()
+        if not customer_name:
+            raise serializers.ValidationError({"customer_name": "Please enter your name."})
+        validated_data['customer_name'] = customer_name
+
         table_number = validated_data.get('table_number')
         if table_number:
             # Check if table is currently occupied with an active dining session
