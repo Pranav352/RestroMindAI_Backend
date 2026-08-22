@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 import uuid
 
 class Restaurant(models.Model):
@@ -119,8 +120,50 @@ class Order(models.Model):
     def __str__(self):
         return f"Order #{self.id} - Table {self.table_number} ({self.status})"
 
+    @property
+    def rounds_count(self):
+        return self.items.values('round').distinct().count() or 1
+
+    def recalculate_total(self):
+        """Recalculate total price based on non-cancelled line items."""
+        active_items = self.items.exclude(status='cancelled')
+        self.total_price = sum(item.price * item.quantity for item in active_items)
+        self.save(update_fields=['total_price', 'updated_at'])
+
+    def sync_overall_status(self):
+        """Synchronize the order-level status based on individual item rounds."""
+        if self.status == 'completed':
+            return
+
+        items = list(self.items.all())
+        if not items:
+            return
+
+        active_items = [i for i in items if i.status != 'cancelled']
+        if not active_items:
+            self.status = 'cancelled'
+        elif all(i.status == 'served' for i in active_items):
+            self.status = 'served'
+        elif any(i.status == 'preparing' for i in active_items):
+            self.status = 'preparing'
+        elif any(i.status == 'pending' for i in active_items):
+            # If some are served/preparing and some pending, it is preparing
+            if any(i.status in ('preparing', 'served') for i in active_items):
+                self.status = 'preparing'
+            else:
+                self.status = 'pending'
+
+        self.save(update_fields=['status', 'updated_at'])
+
 
 class OrderItem(models.Model):
+    ITEM_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('preparing', 'Preparing'),
+        ('served', 'Served'),
+        ('cancelled', 'Cancelled'),
+    ]
+
     order = models.ForeignKey(
         Order,
         on_delete=models.CASCADE,
@@ -132,8 +175,15 @@ class OrderItem(models.Model):
     )
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2)  # Price at the time of order
+    status = models.CharField(max_length=20, choices=ITEM_STATUS_CHOICES, default='pending')
+    round = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['round', 'created_at', 'id']
 
     def __str__(self):
-        return f"{self.quantity}x {self.menu_item.name} in Order #{self.order.id}"
+        return f"[R{self.round}] {self.quantity}x {self.menu_item.name} ({self.status}) in Order #{self.order.id}"
+
 
 
