@@ -271,23 +271,84 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        fields = ('id', 'menu_item', 'menu_item_name', 'menu_item_price', 'quantity', 'price')
-        read_only_fields = ('price',)
+        fields = ('id', 'menu_item', 'menu_item_name', 'menu_item_price', 'quantity', 'price', 'status', 'round', 'created_at')
+        read_only_fields = ('price', 'created_at')
 
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
+    tracking_token = serializers.UUIDField(required=False, allow_null=True)
+    rounds_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ('id', 'restaurant', 'table_number', 'customer_name', 'status', 'total_price', 'items', 'tracking_token', 'created_at', 'updated_at')
-        read_only_fields = ('total_price', 'tracking_token', 'created_at', 'updated_at')
+        fields = (
+            'id', 
+            'restaurant', 
+            'table_number', 
+            'customer_name', 
+            'status', 
+            'total_price', 
+            'items', 
+            'tracking_token', 
+            'rounds_count',
+            'created_at', 
+            'updated_at'
+        )
+        read_only_fields = ('total_price', 'created_at', 'updated_at')
+
+    def get_rounds_count(self, obj):
+        return obj.items.values('round').distinct().count() or 1
 
     def create(self, validated_data):
+        from django.db.models import Max
         items_data = validated_data.pop('items')
         restaurant = validated_data['restaurant']
+        tracking_token = validated_data.get('tracking_token')
 
-        # Ensure Table object is created if table_number is present and doesn't exist
+        # Check if customer is adding items to an existing active order (same session)
+        existing_order = None
+        if tracking_token:
+            existing_order = Order.objects.filter(
+                tracking_token=tracking_token,
+                restaurant=restaurant
+            ).exclude(status__in=['completed', 'cancelled']).first()
+
+        if existing_order:
+            # Append new items to existing order as a new round
+            current_max_round = existing_order.items.aggregate(Max('round'))['round__max'] or 1
+            new_round = current_max_round + 1
+
+            for item_data in items_data:
+                menu_item = item_data['menu_item']
+                if menu_item.category.restaurant != restaurant:
+                    raise serializers.ValidationError({"items": f"Menu item {menu_item.name} does not belong to this restaurant."})
+                
+                OrderItem.objects.create(
+                    order=existing_order,
+                    menu_item=menu_item,
+                    quantity=item_data['quantity'],
+                    price=menu_item.price,
+                    status='pending',
+                    round=new_round
+                )
+
+            # Update customer name if provided
+            customer_name = validated_data.get('customer_name')
+            if customer_name and not existing_order.customer_name:
+                existing_order.customer_name = customer_name
+
+            existing_order.recalculate_total()
+            # If the order was served or pending, set it to preparing to alert the kitchen
+            if existing_order.status in ('served', 'pending'):
+                existing_order.status = 'preparing'
+                existing_order.save(update_fields=['status', 'customer_name', 'updated_at'])
+            else:
+                existing_order.save(update_fields=['customer_name', 'updated_at'])
+
+            return existing_order
+
+        # Standard new order creation (Round 1)
         table_number = validated_data.get('table_number')
         if table_number:
             Table.objects.get_or_create(restaurant=restaurant, table_number=table_number)
@@ -305,12 +366,15 @@ class OrderSerializer(serializers.ModelSerializer):
                 order=order,
                 menu_item=menu_item,
                 quantity=item_data['quantity'],
-                price=price
+                price=price,
+                status='pending',
+                round=1
             )
             total_price += price * item_data['quantity']
         
         order.total_price = total_price
-        order.save()
+        order.save(update_fields=['total_price', 'updated_at'])
         return order
+
 
 

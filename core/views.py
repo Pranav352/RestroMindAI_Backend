@@ -5,6 +5,7 @@ from rest_framework import viewsets, permissions, status, generics, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.decorators import action
 
 try:
     import qrcode
@@ -283,10 +284,24 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         if hasattr(self.request, 'tenant_id'):
-            return Order.objects.filter(restaurant_id=self.request.tenant_id)
+            return Order.objects.filter(restaurant_id=self.request.tenant_id).prefetch_related('items__menu_item')
         return Order.objects.none()
 
-    from rest_framework.decorators import action
+    def perform_update(self, serializer):
+        order = serializer.save()
+        new_status = serializer.validated_data.get('status')
+        if new_status:
+            # Propagate status to line items if whole order transitioned
+            if new_status == 'served':
+                order.items.exclude(status='cancelled').update(status='served')
+            elif new_status == 'preparing':
+                order.items.filter(status='pending').update(status='preparing')
+            elif new_status == 'cancelled':
+                order.items.update(status='cancelled')
+                order.recalculate_total()
+            elif new_status == 'completed':
+                order.items.exclude(status='cancelled').update(status='served')
+
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def status(self, request):
         token = request.query_params.get('token')
@@ -302,15 +317,92 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not token:
             return Response({"error": "Tracking token is required."}, status=status.HTTP_400_BAD_REQUEST)
         order = get_object_or_404(Order, tracking_token=token)
-        if order.status != 'pending':
+        
+        # Check if entire order or any round can be cancelled
+        pending_items = order.items.filter(status='pending')
+        if not pending_items.exists() and order.status != 'pending':
             return Response(
-                {"error": "Only pending orders can be cancelled."},
+                {"error": "Only pending orders or items can be cancelled."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        order.status = 'cancelled'
-        order.save()
+
+        if order.items.exclude(status='pending').exists():
+            # Only cancel pending items
+            pending_items.update(status='cancelled')
+            order.recalculate_total()
+            order.sync_overall_status()
+        else:
+            # Cancel entire order
+            order.items.update(status='cancelled')
+            order.status = 'cancelled'
+            order.save(update_fields=['status', 'updated_at'])
+
         serializer = self.get_serializer(order)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['patch'], permission_classes=[permissions.IsAuthenticated, HasTenantAccess, HasActiveSubscription])
+    def update_round_status(self, request, pk=None):
+        """Update the preparation status for all items within a specific round (e.g. Round 1 -> served)."""
+        order = self.get_object()
+        round_number = request.data.get('round')
+        new_status = request.data.get('status')
+
+        valid_statuses = ['pending', 'preparing', 'served', 'cancelled']
+        if not round_number or new_status not in valid_statuses:
+            return Response(
+                {"error": f"round (int) and valid status ({', '.join(valid_statuses)}) are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            round_number = int(round_number)
+        except ValueError:
+            return Response({"error": "round must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        items_in_round = order.items.filter(round=round_number)
+        if not items_in_round.exists():
+            return Response({"error": f"No items found for round {round_number}."}, status=status.HTTP_404_NOT_FOUND)
+
+        items_in_round.update(status=new_status)
+        if new_status == 'cancelled':
+            order.recalculate_total()
+
+        # If a round is marked served, check if next round exists and automatically advance it to preparing
+        if new_status == 'served':
+            next_pending_items = order.items.filter(round__gt=round_number, status='pending')
+            if next_pending_items.exists():
+                next_round_num = next_pending_items.first().round
+                order.items.filter(round=next_round_num, status='pending').update(status='preparing')
+
+        order.sync_overall_status()
+        serializer = self.get_serializer(order)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['patch'], permission_classes=[permissions.IsAuthenticated, HasTenantAccess, HasActiveSubscription])
+    def update_item_status(self, request, pk=None):
+        """Update the status of an individual item within an order."""
+        order = self.get_object()
+        item_id = request.data.get('item_id')
+        new_status = request.data.get('status')
+
+        valid_statuses = ['pending', 'preparing', 'served', 'cancelled']
+        if not item_id or new_status not in valid_statuses:
+            return Response(
+                {"error": f"item_id and valid status ({', '.join(valid_statuses)}) are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        order_item = get_object_or_404(order.items, id=item_id)
+        order_item.status = new_status
+        order_item.save(update_fields=['status'])
+
+        if new_status == 'cancelled':
+            order.recalculate_total()
+
+        order.sync_overall_status()
+        serializer = self.get_serializer(order)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 
 class OwnerDashboardStatsView(APIView):
