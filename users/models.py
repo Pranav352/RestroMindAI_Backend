@@ -39,14 +39,23 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='customer')
 
+    recovery_pin = models.CharField(max_length=128, blank=True, null=True)
+
     objects = UserManager()
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
 
-    # ------------------------------------------------------------------
-    # Additional computed properties or methods can go here
-    # ------------------------------------------------------------------
+    def set_recovery_pin(self, raw_pin):
+        from django.contrib.auth.hashers import make_password
+        if raw_pin:
+            self.recovery_pin = make_password(str(raw_pin))
+
+    def check_recovery_pin(self, raw_pin):
+        from django.contrib.auth.hashers import check_password
+        if not self.recovery_pin or not raw_pin:
+            return False
+        return check_password(str(raw_pin), self.recovery_pin)
 
     def __str__(self):
         return f"{self.email} ({self.get_role_display()})"
@@ -92,32 +101,6 @@ class Subscription(models.Model):
         return f"{self.user.email} - {self.get_plan_display()} ({self.get_status_display()})"
 
 
-from django.db.models.signals import post_save
-from django.dispatch import receiver
-import sys
-
-@receiver(post_save, sender=User)
-def create_user_subscription(sender, instance, created, **kwargs):
-    if created and instance.role == 'owner':
-        # Default to pending for MVP, but auto-approve for unit tests to keep existing tests green
-        is_testing = 'test' in sys.argv or 'test_coverage' in sys.argv or 'pytest' in sys.argv[0]
-        status = 'active' if is_testing else 'pending'
-        
-        from django.utils import timezone
-        from datetime import timedelta
-        
-        start_date = timezone.now() if status == 'active' else None
-        end_date = timezone.now() + timedelta(days=30) if status == 'active' else None
-        
-        Subscription.objects.get_or_create(
-            user=instance,
-            defaults={
-                'plan': 'free_trial',
-                'status': status,
-                'start_date': start_date,
-                'end_date': end_date
-            }
-        )
 
 
 

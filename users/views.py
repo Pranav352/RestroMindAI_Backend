@@ -4,9 +4,11 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
-from .serializers import RegisterSerializer, UserSerializer
+from django.utils import timezone
+from .serializers import RegisterSerializer, UserSerializer, ResetPasswordWithPinSerializer, UserProfileUpdateSerializer
 
 User = get_user_model()
+
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -26,6 +28,24 @@ class RegisterView(generics.CreateAPIView):
             },
             status=status.HTTP_201_CREATED
         )
+
+
+class ResetPasswordWithPinView(APIView):
+    permission_classes = (permissions.AllowAny,)
+    throttle_scope = 'auth'
+
+    def post(self, request):
+        serializer = ResetPasswordWithPinSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {
+                "success": True,
+                "message": "Password has been reset successfully. You can now log in with your new password."
+            },
+            status=status.HTTP_200_OK
+        )
+
 
 
 class LoginView(TokenObtainPairView):
@@ -63,10 +83,22 @@ class MeView(APIView):
         serializer = UserSerializer(request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def patch(self, request):
+        serializer = UserProfileUpdateSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(
+            {
+                "success": True,
+                "message": "Profile updated successfully.",
+                "user": UserSerializer(user).data
+            },
+            status=status.HTTP_200_OK
+        )
 
-from django.utils import timezone
 
 class MockUpgradeView(APIView):
+
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request):

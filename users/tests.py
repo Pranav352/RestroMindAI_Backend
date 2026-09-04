@@ -14,7 +14,7 @@ class AuthTests(APITestCase):
         
         self.user_data = {
             "email": "owner@restromind.com",
-            "password": "securepassword123",
+            "password": "RestroMind@2026",
             "role": "owner"
         }
 
@@ -35,23 +35,34 @@ class AuthTests(APITestCase):
 
     def test_user_registration_invalid_role(self):
         invalid_data = self.user_data.copy()
-        invalid_data['role'] = 'superuser'  # Not in customer, owner, admin
+        invalid_data['role'] = 'superuser'
         response = self.client.post(self.register_url, invalid_data, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('role', response.data)
 
-    def test_user_registration_short_password(self):
+    def test_password_complexity_missing_symbol(self):
         invalid_data = self.user_data.copy()
-        invalid_data['password'] = 'short'
+        invalid_data['password'] = 'RestroMind2026'  # No symbol
+        response = self.client.post(self.register_url, invalid_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('password', response.data)
+
+    def test_password_complexity_missing_uppercase(self):
+        invalid_data = self.user_data.copy()
+        invalid_data['password'] = 'restromind@2026'  # No uppercase
+        response = self.client.post(self.register_url, invalid_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('password', response.data)
+
+    def test_password_complexity_exceeding_max_length(self):
+        invalid_data = self.user_data.copy()
+        invalid_data['password'] = 'RestroMind@2026' + 'a' * 25  # > 32 chars
         response = self.client.post(self.register_url, invalid_data, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('password', response.data)
 
     def test_user_login_success(self):
-        # Register first
         self.client.post(self.register_url, self.user_data, format='json')
-        
-        # Log in
         login_data = {
             "email": self.user_data['email'],
             "password": self.user_data['password']
@@ -62,13 +73,10 @@ class AuthTests(APITestCase):
         self.assertIn('refresh', response.data)
 
     def test_user_login_invalid_credentials(self):
-        # Register first
         self.client.post(self.register_url, self.user_data, format='json')
-        
-        # Log in with wrong password
         login_data = {
             "email": self.user_data['email'],
-            "password": "wrongpassword"
+            "password": "WrongPassword123!"
         }
         response = self.client.post(self.login_url, login_data, format='json')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -78,7 +86,6 @@ class AuthTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_protected_endpoint_with_token(self):
-        # Register and log in
         self.client.post(self.register_url, self.user_data, format='json')
         login_data = {
             "email": self.user_data['email'],
@@ -87,14 +94,12 @@ class AuthTests(APITestCase):
         login_res = self.client.post(self.login_url, login_data, format='json')
         access_token = login_res.data['access']
         
-        # Access with token
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
         response = self.client.get(self.me_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['email'], self.user_data['email'])
 
     def test_user_logout(self):
-        # Register and log in
         self.client.post(self.register_url, self.user_data, format='json')
         login_data = {
             "email": self.user_data['email'],
@@ -104,24 +109,104 @@ class AuthTests(APITestCase):
         access_token = login_res.data['access']
         refresh_token = login_res.data['refresh']
         
-        # Log out
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
         logout_res = self.client.post(self.logout_url, {"refresh": refresh_token}, format='json')
         self.assertEqual(logout_res.status_code, status.HTTP_205_RESET_CONTENT)
         self.assertTrue(logout_res.data['success'])
 
-        # Try to use blacklisted refresh token again
         logout_res_retry = self.client.post(self.logout_url, {"refresh": refresh_token}, format='json')
         self.assertEqual(logout_res_retry.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_user_registration_with_first_name_and_pin(self):
+        data = {
+            "email": "john.owner@restromind.com",
+            "password": "RestroMind@2026",
+            "role": "owner",
+            "first_name": "John Doe",
+            "recovery_pin": "4829"
+        }
+        response = self.client.post(self.register_url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user']['first_name'], "John Doe")
+        
+        user = User.objects.get(email="john.owner@restromind.com")
+        self.assertEqual(user.first_name, "John Doe")
+        self.assertTrue(user.check_recovery_pin("4829"))
+        self.assertFalse(user.subscription.is_active())
+        self.assertEqual(user.subscription.status, 'pending')
+
+
+    def test_reset_password_with_pin_success(self):
+        data = {
+            "email": "reset.owner@restromind.com",
+            "password": "OldPassword123!",
+            "role": "owner",
+            "recovery_pin": "1234"
+        }
+        self.client.post(self.register_url, data, format='json')
+        
+        reset_url = reverse('auth_reset_password_with_pin')
+        reset_data = {
+            "email": "reset.owner@restromind.com",
+            "pin": "1234",
+            "new_password": "NewSecurePassword123!"
+        }
+        response = self.client.post(reset_url, reset_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+
+        login_data = {
+            "email": "reset.owner@restromind.com",
+            "password": "NewSecurePassword123!"
+        }
+        login_res = self.client.post(self.login_url, login_data, format='json')
+        self.assertEqual(login_res.status_code, status.HTTP_200_OK)
+
+    def test_reset_password_account_without_pin(self):
+        data = {
+            "email": "nopin.owner@restromind.com",
+            "password": "OldPassword123!",
+            "role": "owner"
+        }
+        self.client.post(self.register_url, data, format='json')
+        
+        reset_url = reverse('auth_reset_password_with_pin')
+        reset_data = {
+            "email": "nopin.owner@restromind.com",
+            "pin": "1234",
+            "new_password": "NewSecurePassword123!"
+        }
+        response = self.client.post(reset_url, reset_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('No recovery PIN set', response.data['pin'][0])
+
+    def test_update_pin_via_me_view(self):
+        data = {
+            "email": "updatepin.owner@restromind.com",
+            "password": "OldPassword123!",
+            "role": "owner"
+        }
+        self.client.post(self.register_url, data, format='json')
+        login_res = self.client.post(self.login_url, {"email": data['email'], "password": data['password']}, format='json')
+        access_token = login_res.data['access']
+        
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+        me_res = self.client.get(self.me_url)
+        self.assertFalse(me_res.data['has_recovery_pin'])
+
+        patch_res = self.client.patch(self.me_url, {"recovery_pin": "5678", "first_name": "Updated Name"}, format='json')
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(patch_res.data['user']['has_recovery_pin'])
+        self.assertEqual(patch_res.data['user']['first_name'], "Updated Name")
+
 
 class SubscriptionTests(APITestCase):
+
     def setUp(self):
         self.owner_email = "newowner@test.com"
-        self.owner_password = "securepassword123"
+        self.owner_password = "RestroMindPassword123!"
 
     def test_subscription_states(self):
-        # Register a new owner
         register_url = reverse('auth_register')
         data = {
             "email": self.owner_email,
@@ -135,18 +220,18 @@ class SubscriptionTests(APITestCase):
         
         user = User.objects.get(email=self.owner_email)
         self.assertTrue(hasattr(user, 'subscription'))
+        self.assertFalse(user.subscription.is_active())
+        self.assertEqual(user.subscription.status, 'pending')
+
         
-        # Test pending state
         user.subscription.status = 'pending'
         user.subscription.save()
         self.assertFalse(user.subscription.is_active())
 
-        # Test stopped state
         user.subscription.status = 'stopped'
         user.subscription.save()
         self.assertFalse(user.subscription.is_active())
 
-        # Test active state with remaining days
         user.subscription.status = 'active'
         from django.utils import timezone
         from datetime import timedelta
@@ -156,5 +241,3 @@ class SubscriptionTests(APITestCase):
         
         self.assertTrue(user.subscription.is_active())
         self.assertEqual(user.subscription.days_remaining(), 30)
-
-
