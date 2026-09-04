@@ -460,10 +460,12 @@ class OwnerDashboardStatsView(APIView):
         from django.db.models import Sum
 
         tenant_id = getattr(request, 'tenant_id', None)
-        if not tenant_id:
-            restaurant = None
-        else:
+        if not tenant_id and request.user and request.user.is_authenticated and request.user.role == 'owner':
+            restaurant = Restaurant.objects.filter(owner=request.user).first()
+        elif tenant_id:
             restaurant = Restaurant.objects.filter(id=tenant_id).first()
+        else:
+            restaurant = None
             
         if not restaurant:
             return Response({

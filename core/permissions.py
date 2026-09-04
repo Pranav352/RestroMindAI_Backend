@@ -49,9 +49,12 @@ class HasTenantAccess(permissions.BasePermission):
 
         tenant_id = request.headers.get('X-Tenant-ID')
         if not tenant_id:
-            # If no tenant ID is provided, we allow the request to proceed.
-            # Endpoints will gracefully handle the missing request.tenant_id
-            # (e.g. by returning empty querysets or a "no restaurant" payload).
+            # Fallback for owners: if no X-Tenant-ID header is explicitly provided,
+            # auto-default to their primary owned restaurant if one exists.
+            if request.user.role == 'owner':
+                owner_restaurant = Restaurant.objects.filter(owner=request.user).first()
+                if owner_restaurant:
+                    request.tenant_id = owner_restaurant.id
             return True
 
         try:
