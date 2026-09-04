@@ -1,8 +1,14 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Subscription
+from .models import Subscription, SystemSetting
 
 User = get_user_model()
+
+class SystemSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemSetting
+        fields = '__all__'
+
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     days_remaining = serializers.IntegerField(read_only=True)
@@ -16,26 +22,75 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     subscription = SubscriptionSerializer(read_only=True)
     has_recovery_pin = serializers.SerializerMethodField()
+    quota_usage = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'role', 'subscription', 'has_recovery_pin')
+        fields = ('id', 'email', 'first_name', 'role', 'subscription', 'has_recovery_pin', 'avatar', 'settings', 'quota_usage')
 
     def get_has_recovery_pin(self, obj):
         return bool(obj.recovery_pin)
 
+    def get_quota_usage(self, obj):
+        if obj.role != 'owner':
+            return None
+
+        try:
+            from django.utils import timezone
+            from core.models import Order, MenuItem
+            from .models import SystemSetting
+
+            sys_settings = SystemSetting.get_settings()
+            max_orders = sys_settings.free_tier_max_orders_per_month
+            max_menu_items = sys_settings.free_tier_max_menu_items
+
+            now = timezone.now()
+            start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            orders_used = Order.objects.filter(
+                restaurant__owner=obj,
+                created_at__gte=start_of_month
+            ).count()
+
+            menu_items_count = MenuItem.objects.filter(
+                category__restaurant__owner=obj
+            ).count()
+
+            orders_pct = round((orders_used / max_orders) * 100) if max_orders > 0 else 0
+            menu_items_pct = round((menu_items_count / max_menu_items) * 100) if max_menu_items > 0 else 0
+
+            return {
+                'orders_used_this_month': orders_used,
+                'max_orders_limit': max_orders,
+                'orders_percentage': min(100, orders_pct),
+                'menu_items_count': menu_items_count,
+                'max_menu_items_limit': max_menu_items,
+                'menu_items_percentage': min(100, menu_items_pct),
+            }
+        except Exception:
+            return None
+
 
 class UserProfileUpdateSerializer(serializers.ModelSerializer):
     recovery_pin = serializers.CharField(required=False, allow_blank=True, write_only=True, min_length=4, max_length=6)
+    avatar = serializers.ImageField(required=False, allow_null=True)
+    settings = serializers.JSONField(required=False)
 
     class Meta:
         model = User
-        fields = ('first_name', 'recovery_pin')
+        fields = ('first_name', 'recovery_pin', 'avatar', 'settings')
 
     def update(self, instance, validated_data):
         recovery_pin = validated_data.pop('recovery_pin', None)
         if recovery_pin:
             instance.set_recovery_pin(recovery_pin)
+        
+        new_settings = validated_data.pop('settings', None)
+        if new_settings is not None:
+            current_settings = instance.settings or {}
+            current_settings.update(new_settings)
+            instance.settings = current_settings
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
@@ -139,6 +194,39 @@ class ResetPasswordWithPinSerializer(serializers.Serializer):
         user.set_password(new_password)
         user.save()
         return user
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(required=True, write_only=True, min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+    confirm_password = serializers.CharField(required=True, write_only=True)
+
+    def validate_new_password(self, value):
+        return validate_password_complexity(value)
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+        current_password = attrs.get('current_password')
+        new_password = attrs.get('new_password')
+        confirm_password = attrs.get('confirm_password')
+
+        if not user.check_password(current_password):
+            raise serializers.ValidationError({"current_password": "Current password is incorrect."})
+
+        if new_password != confirm_password:
+            raise serializers.ValidationError({"confirm_password": "New password and confirmation password do not match."})
+
+        if current_password == new_password:
+            raise serializers.ValidationError({"new_password": "New password cannot be the same as your current password."})
+
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save()
+        return user
+
 
 
 

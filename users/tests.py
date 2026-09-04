@@ -199,6 +199,94 @@ class AuthTests(APITestCase):
         self.assertTrue(patch_res.data['user']['has_recovery_pin'])
         self.assertEqual(patch_res.data['user']['first_name'], "Updated Name")
 
+    def test_update_user_settings_via_me_view(self):
+        self.client.post(self.register_url, self.user_data, format='json')
+        login_res = self.client.post(self.login_url, {"email": self.user_data['email'], "password": self.user_data['password']}, format='json')
+        access_token = login_res.data['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+        payload = {
+            "settings": {
+                "setting_order_sound": True,
+                "setting_kds_refresh": "5",
+                "setting_receipt_header": "RestroMind AI Special Dining"
+            }
+        }
+        patch_res = self.client.patch(self.me_url, payload, format='json')
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_res.data['user']['settings']['setting_kds_refresh'], "5")
+        self.assertEqual(patch_res.data['user']['settings']['setting_receipt_header'], "RestroMind AI Special Dining")
+
+        # Verify GET /api/auth/me/ returns persisted settings
+        me_res = self.client.get(self.me_url)
+        self.assertEqual(me_res.data['settings']['setting_kds_refresh'], "5")
+
+    def test_system_settings_global_broadcast(self):
+        sys_url = reverse('system_settings')
+        # Public GET works for any user
+        res = self.client.get(sys_url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('maintenance_mode', res.data)
+
+        # Admin user PATCH works
+        admin_user = User.objects.create_superuser(email="admin.sys@test.com", password="AdminPassword123!")
+        login_res = self.client.post(self.login_url, {"email": "admin.sys@test.com", "password": "AdminPassword123!"}, format='json')
+        access_token = login_res.data['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+        patch_res = self.client.patch(sys_url, {
+            "maintenance_mode": True,
+            "banner_severity": "critical",
+            "banner_text": "Global Urgent Outage Warning"
+        }, format='json')
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(patch_res.data['maintenance_mode'])
+        self.assertEqual(patch_res.data['banner_severity'], "critical")
+
+        # Unauthenticated GET returns updated global settings
+        self.client.credentials()
+        get_res = self.client.get(sys_url)
+        self.assertTrue(get_res.data['maintenance_mode'])
+        self.assertEqual(get_res.data['banner_text'], "Global Urgent Outage Warning")
+
+
+    def test_change_password_success(self):
+        self.client.post(self.register_url, self.user_data, format='json')
+        login_res = self.client.post(self.login_url, {"email": self.user_data['email'], "password": self.user_data['password']}, format='json')
+        access_token = login_res.data['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+        change_pass_url = reverse('auth_change_password')
+        payload = {
+            "current_password": self.user_data['password'],
+            "new_password": "NewSecretPass@2026",
+            "confirm_password": "NewSecretPass@2026"
+        }
+        res = self.client.post(change_pass_url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['success'])
+
+        # Try logging in with new password
+        login_res_new = self.client.post(self.login_url, {"email": self.user_data['email'], "password": "NewSecretPass@2026"}, format='json')
+        self.assertEqual(login_res_new.status_code, status.HTTP_200_OK)
+
+    def test_change_password_incorrect_current(self):
+        self.client.post(self.register_url, self.user_data, format='json')
+        login_res = self.client.post(self.login_url, {"email": self.user_data['email'], "password": self.user_data['password']}, format='json')
+        access_token = login_res.data['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+        change_pass_url = reverse('auth_change_password')
+        payload = {
+            "current_password": "WrongCurrentPassword123!",
+            "new_password": "NewSecretPass@2026",
+            "confirm_password": "NewSecretPass@2026"
+        }
+        res = self.client.post(change_pass_url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('current_password', res.data)
+
+
 
 class SubscriptionTests(APITestCase):
 
