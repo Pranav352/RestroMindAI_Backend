@@ -37,12 +37,13 @@ class UserSerializer(serializers.ModelSerializer):
 
         try:
             from django.utils import timezone
-            from core.models import Order, MenuItem
+            from core.models import Order, MenuItem, Table
             from .models import SystemSetting
 
             sys_settings = SystemSetting.get_settings()
             max_orders = sys_settings.free_tier_max_orders_per_month
             max_menu_items = sys_settings.free_tier_max_menu_items
+            max_tables = sys_settings.free_tier_max_tables
 
             now = timezone.now()
             start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -56,8 +57,13 @@ class UserSerializer(serializers.ModelSerializer):
                 category__restaurant__owner=obj
             ).count()
 
+            tables_count = Table.objects.filter(
+                restaurant__owner=obj
+            ).count()
+
             orders_pct = round((orders_used / max_orders) * 100) if max_orders > 0 else 0
             menu_items_pct = round((menu_items_count / max_menu_items) * 100) if max_menu_items > 0 else 0
+            tables_pct = round((tables_count / max_tables) * 100) if max_tables > 0 else 0
 
             return {
                 'orders_used_this_month': orders_used,
@@ -66,6 +72,10 @@ class UserSerializer(serializers.ModelSerializer):
                 'menu_items_count': menu_items_count,
                 'max_menu_items_limit': max_menu_items,
                 'menu_items_percentage': min(100, menu_items_pct),
+                'tables_count': tables_count,
+                'max_tables_limit': max_tables,
+                'tables_percentage': min(100, tables_pct),
+                'tables_limit_reached': tables_count >= max_tables,
             }
         except Exception:
             return None

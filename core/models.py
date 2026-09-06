@@ -82,14 +82,18 @@ class Table(models.Model):
         related_name='tables'
     )
     table_number = models.PositiveIntegerField()
+    section = models.CharField(max_length=50, default='Main Area', blank=True)
+    label = models.CharField(max_length=50, blank=True)
     qr_code = models.CharField(max_length=255, null=True, blank=True)
+    qr_code_svg = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
-        ordering = ['table_number']
-        unique_together = ('restaurant', 'table_number')
+        ordering = ['section', 'table_number']
+        unique_together = ('restaurant', 'section', 'table_number')
 
     def __str__(self):
-        return f"Table {self.table_number} ({self.restaurant.name})"
+        display_name = self.label if self.label else f"Table {self.table_number}"
+        return f"{display_name} ({self.section}) - {self.restaurant.name}"
 
 
 class Order(models.Model):

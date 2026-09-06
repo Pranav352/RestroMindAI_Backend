@@ -137,6 +137,13 @@ class SystemSetting(models.Model):
     # Free Tier Quota Limits & Security Governance
     free_tier_max_orders_per_month = models.IntegerField(default=50)
     free_tier_max_menu_items = models.IntegerField(default=20)
+    free_tier_max_tables = models.IntegerField(default=5)
+    
+    QR_ENGINE_CHOICES = [
+        ('self_hosted', 'Self-Hosted (Local Media PNG/SVG)'),
+        ('external_api', 'External API (api.qrserver.com)'),
+    ]
+    qr_engine_mode = models.CharField(max_length=20, choices=QR_ENGINE_CHOICES, default='self_hosted')
     failed_login_lockout_threshold = models.IntegerField(default=5)
     audit_log_retention_days = models.IntegerField(default=90)
     
