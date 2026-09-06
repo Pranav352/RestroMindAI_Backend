@@ -97,11 +97,13 @@ class MenuItemSerializer(serializers.ModelSerializer):
 
 class TableSerializer(serializers.ModelSerializer):
     qr_code_url = serializers.SerializerMethodField()
+    qr_code_svg_url = serializers.SerializerMethodField()
+    active_order_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Table
-        fields = ('id', 'restaurant', 'table_number', 'qr_code', 'qr_code_url')
-        read_only_fields = ('qr_code', 'qr_code_url')
+        fields = ('id', 'restaurant', 'table_number', 'section', 'label', 'qr_code', 'qr_code_url', 'qr_code_svg', 'qr_code_svg_url', 'active_order_status')
+        read_only_fields = ('qr_code', 'qr_code_url', 'qr_code_svg', 'qr_code_svg_url', 'active_order_status')
 
     def get_qr_code_url(self, obj):
         if obj.qr_code:
@@ -113,6 +115,25 @@ class TableSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(path)
             return path
         return None
+
+    def get_qr_code_svg_url(self, obj):
+        if obj.qr_code_svg:
+            request = self.context.get('request')
+            path = obj.qr_code_svg
+            if not path.startswith('/media/') and not path.startswith('http://') and not path.startswith('https://'):
+                path = f"/media/{path}"
+            if request:
+                return request.build_absolute_uri(path)
+            return path
+        return None
+
+    def get_active_order_status(self, obj):
+        active_order = Order.objects.filter(
+            restaurant=obj.restaurant,
+            table_number=obj.table_number,
+            status__in=['pending', 'preparing', 'served']
+        ).order_by('-created_at').first()
+        return active_order.status if active_order else 'vacant'
 
     def validate_restaurant(self, value):
         request = self.context.get('request')
@@ -179,6 +200,7 @@ class AdminSubscriptionSerializer(serializers.ModelSerializer):
 class AdminUserSerializer(serializers.ModelSerializer):
     restaurant_count = serializers.SerializerMethodField()
     subscription = AdminSubscriptionSerializer(required=False, allow_null=True)
+    quota_usage = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -189,7 +211,8 @@ class AdminUserSerializer(serializers.ModelSerializer):
             'is_active', 
             'date_joined', 
             'restaurant_count',
-            'subscription'
+            'subscription',
+            'quota_usage'
         )
         read_only_fields = (
             'id', 
@@ -200,6 +223,55 @@ class AdminUserSerializer(serializers.ModelSerializer):
 
     def get_restaurant_count(self, obj):
         return obj.restaurants.count()
+
+    def get_quota_usage(self, obj):
+        if obj.role != 'owner':
+            return None
+
+        try:
+            from django.utils import timezone
+            from core.models import Order, MenuItem, Table
+            from users.models import SystemSetting
+
+            sys_settings = SystemSetting.get_settings()
+            max_orders = sys_settings.free_tier_max_orders_per_month
+            max_menu_items = sys_settings.free_tier_max_menu_items
+            max_tables = sys_settings.free_tier_max_tables
+
+            now = timezone.now()
+            start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            orders_used = Order.objects.filter(
+                restaurant__owner=obj,
+                created_at__gte=start_of_month
+            ).count()
+
+            menu_items_count = MenuItem.objects.filter(
+                category__restaurant__owner=obj
+            ).count()
+
+            tables_count = Table.objects.filter(
+                restaurant__owner=obj
+            ).count()
+
+            orders_pct = round((orders_used / max_orders) * 100) if max_orders > 0 else 0
+            menu_items_pct = round((menu_items_count / max_menu_items) * 100) if max_menu_items > 0 else 0
+            tables_pct = round((tables_count / max_tables) * 100) if max_tables > 0 else 0
+
+            return {
+                'orders_used_this_month': orders_used,
+                'max_orders_limit': max_orders,
+                'orders_percentage': min(100, orders_pct),
+                'menu_items_count': menu_items_count,
+                'max_menu_items_limit': max_menu_items,
+                'menu_items_percentage': min(100, menu_items_pct),
+                'tables_count': tables_count,
+                'max_tables_limit': max_tables,
+                'tables_percentage': min(100, tables_pct),
+                'tables_limit_reached': tables_count >= max_tables,
+            }
+        except Exception:
+            return None
 
     def update(self, instance, validated_data):
         subscription_data = validated_data.pop('subscription', None)

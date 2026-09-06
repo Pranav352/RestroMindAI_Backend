@@ -9,6 +9,7 @@ from rest_framework.decorators import action
 
 try:
     import qrcode
+    import qrcode.image.svg
 except ImportError:
     qrcode = None
 
@@ -68,13 +69,132 @@ class MenuItemViewSet(viewsets.ModelViewSet):
         return MenuItem.objects.none()
 
 
+from rest_framework.pagination import PageNumberPagination
+
+
+class TablePagination(PageNumberPagination):
+    page_size = 5
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class TableViewSet(viewsets.ModelViewSet):
+    serializer_class = TableSerializer
+    permission_classes = [permissions.IsAuthenticated, HasTenantAccess, HasActiveSubscription]
+    pagination_class = TablePagination
+
+    def get_queryset(self):
+        if hasattr(self.request, 'tenant_id'):
+            qs = Table.objects.filter(restaurant_id=self.request.tenant_id)
+            sec = self.request.query_params.get('section')
+            if sec and sec != 'All':
+                qs = qs.filter(section=sec)
+            return qs.order_by('table_number')
+        return Table.objects.none()
+
+
+def get_frontend_base_url(request):
+    """Dynamically determine frontend base URL from settings, request headers, or fallback."""
+    frontend_base = getattr(settings, 'FRONTEND_BASE_URL', None)
+    if frontend_base and frontend_base != 'http://localhost:3000':
+        return frontend_base.rstrip('/')
+    
+    origin = request.headers.get('origin')
+    if origin:
+        return origin.rstrip('/')
+    
+    referer = request.headers.get('referer')
+    if referer:
+        from urllib.parse import urlparse
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+            
+    return getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:3000').rstrip('/')
+
+
+def generate_table_qr_code(restaurant, table_number, request, section="Main Area", label=""):
+    section = section or "Main Area"
+    table, created = Table.objects.get_or_create(
+        restaurant=restaurant,
+        section=section,
+        table_number=table_number,
+        defaults={'label': label}
+    )
+    if not created and label:
+        table.label = label
+        table.save(update_fields=['label'])
+
+    frontend_base = get_frontend_base_url(request)
+    target_url = f"{frontend_base}/menu/{restaurant.id}?table={table.table_number}"
+
+    if qrcode is not None:
+        try:
+            # Generate PNG raster image
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(target_url)
+            qr.make(fit=True)
+
+            img = qr.make_image(fill_color="black", back_color="white")
+
+            qr_dir = os.path.join(settings.MEDIA_ROOT, 'qrcodes')
+            os.makedirs(qr_dir, exist_ok=True)
+            
+            sec_slug = section.lower().replace(' ', '_')
+            file_name_png = f"restaurant_{restaurant.id}_{sec_slug}_table_{table_number}.png"
+            file_path_png = os.path.join(qr_dir, file_name_png)
+            img.save(file_path_png)
+            table.qr_code = f"qrcodes/{file_name_png}"
+
+            # Generate SVG Vector image
+            try:
+                factory = qrcode.image.svg.SvgImage
+                svg_img = qrcode.make(target_url, image_factory=factory)
+                file_name_svg = f"restaurant_{restaurant.id}_{sec_slug}_table_{table_number}.svg"
+                file_path_svg = os.path.join(qr_dir, file_name_svg)
+                svg_img.save(file_path_svg)
+                table.qr_code_svg = f"qrcodes/{file_name_svg}"
+            except Exception as err:
+                print(f"SVG QR Generation Warning: {err}")
+
+            table.save()
+        except Exception as img_err:
+            print(f"PNG QR Generation Warning: {img_err}")
+            sec_slug = section.lower().replace(' ', '_')
+            table.qr_code = f"qrcodes/restaurant_{restaurant.id}_{sec_slug}_table_{table_number}.png"
+            table.save()
+
+    return table
+
+
+def check_table_quota_limit(restaurant, new_tables_count=1):
+    """Verify if owner on Free Trial can generate requested new tables."""
+    subscription = getattr(restaurant.owner, 'subscription', None)
+    if subscription and subscription.plan == 'free_trial':
+        from users.models import SystemSetting
+        sys_settings = SystemSetting.get_settings()
+        max_tables = sys_settings.free_tier_max_tables
+        
+        current_tables = Table.objects.filter(restaurant=restaurant).count()
+        if current_tables + new_tables_count > max_tables:
+            return False, f"Free Trial table limit reached ({current_tables}/{max_tables} QR codes used). Upgrade your subscription to generate more tables."
+            
+    return True, None
+
+
 class QRGenerateView(APIView):
     permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
-
 
     def post(self, request):
         restaurant_id = request.data.get("restaurant_id")
         table_number = request.data.get("table_number", 1)
+        section = request.data.get("section", "Main Area")
+        label = request.data.get("label", "")
 
         if not restaurant_id:
             return Response(
@@ -107,42 +227,75 @@ class QRGenerateView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+        # Check Free Trial quota if creating a new table
+        table_exists = Table.objects.filter(restaurant=restaurant, section=section, table_number=table_number).exists()
+        if not table_exists:
+            quota_ok, error_msg = check_table_quota_limit(restaurant, 1)
+            if not quota_ok:
+                return Response({"error": error_msg}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get or create the Table
-        table, created = Table.objects.get_or_create(
-            restaurant=restaurant,
-            table_number=table_number
-        )
-
-        # Build target public menu URL using FRONTEND_BASE_URL env var
-        frontend_base = getattr(settings, 'FRONTEND_BASE_URL', 'http://localhost:3000').rstrip('/')
-        target_url = f"{frontend_base}/menu/{restaurant.id}?table={table.table_number}"
-
-        # Generate QR Code image
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
-        qr.add_data(target_url)
-        qr.make(fit=True)
-
-        img = qr.make_image(fill_color="black", back_color="white")
-
-        # Save to media folder under qrcodes/
-        qr_dir = os.path.join(settings.MEDIA_ROOT, 'qrcodes')
-        os.makedirs(qr_dir, exist_ok=True)
-        
-        file_name = f"restaurant_{restaurant.id}_table_{table_number}.png"
-        file_path = os.path.join(qr_dir, file_name)
-        img.save(file_path)
-
-        # Save relative URL/path in database
-        table.qr_code = f"qrcodes/{file_name}"
-        table.save()
+        table = generate_table_qr_code(restaurant, table_number, request, section=section, label=label)
 
         serializer = TableSerializer(table, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class BulkQRGenerateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
+
+    def post(self, request):
+        restaurant_id = request.data.get("restaurant_id")
+        start_table = request.data.get("start_table", 1)
+        count = request.data.get("count", 5)
+        section = request.data.get("section", "Main Area")
+
+        if not restaurant_id:
+            return Response(
+                {"restaurant_id": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        restaurant = get_object_or_404(Restaurant, id=restaurant_id)
+
+        if restaurant.owner != request.user:
+            return Response(
+                {"error": "You do not own this restaurant."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            start_table = int(start_table)
+            count = int(count)
+            if start_table <= 0 or count <= 0 or count > 50:
+                raise ValueError()
+        except ValueError:
+            return Response(
+                {"error": "start_table must be >= 1 and count must be between 1 and 50."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if qrcode is None:
+            return Response(
+                {"error": "qrcode library is not installed on the system."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # Check Free Trial quota for new tables in bulk request
+        existing_nums = set(Table.objects.filter(restaurant=restaurant, section=section).values_list('table_number', flat=True))
+        new_count = sum(1 for num in range(start_table, start_table + count) if num not in existing_nums)
+
+        if new_count > 0:
+            quota_ok, error_msg = check_table_quota_limit(restaurant, new_count)
+            if not quota_ok:
+                return Response({"error": error_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        generated_tables = []
+        for num in range(start_table, start_table + count):
+            lbl = f"{section} #{num}" if section != "Main Area" else ""
+            table = generate_table_qr_code(restaurant, num, request, section=section, label=lbl)
+            generated_tables.append(table)
+
+        serializer = TableSerializer(generated_tables, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
