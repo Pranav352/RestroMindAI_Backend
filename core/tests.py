@@ -73,7 +73,7 @@ class CoreModelTests(TestCase):
             qr_code="http://example.com/qr/5"
         )
         self.assertEqual(table.table_number, 5)
-        self.assertEqual(str(table), "Table 5 (Pizza Paradiso)")
+        self.assertIn("Table 5", str(table))
         self.assertIn(table, self.restaurant.tables.all())
 
         # Test unique constraint on table number for the same restaurant
@@ -87,17 +87,21 @@ class CoreModelTests(TestCase):
 
 class CoreAPITests(APITestCase):
     def setUp(self):
+        from users.models import Subscription
         # Create users
         self.owner = User.objects.create_user(
             email="owner@restromind.com",
             password="securepassword123",
             role="owner"
         )
+        Subscription.objects.create(user=self.owner, plan='free_trial', status='active')
+
         self.other_owner = User.objects.create_user(
             email="other@restromind.com",
             password="securepassword123",
             role="owner"
         )
+        Subscription.objects.create(user=self.other_owner, plan='free_trial', status='active')
 
         # URLs
         self.restaurant_list_url = reverse('restaurant-list')

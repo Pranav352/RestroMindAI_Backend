@@ -45,8 +45,14 @@ class UserSerializer(serializers.ModelSerializer):
             max_menu_items = sys_settings.free_tier_max_menu_items
             max_tables = sys_settings.free_tier_max_tables
 
-            now = timezone.now()
-            start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            from datetime import timezone as dt_timezone
+            import zoneinfo
+
+            now_utc = timezone.now()
+            local_tz = zoneinfo.ZoneInfo('Asia/Kolkata')
+            now_local = now_utc.astimezone(local_tz)
+            start_of_month_local = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            start_of_month = start_of_month_local.astimezone(dt_timezone.utc)
 
             orders_used = Order.objects.filter(
                 restaurant__owner=obj,

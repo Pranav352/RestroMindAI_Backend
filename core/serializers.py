@@ -39,7 +39,7 @@ class RestaurantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Restaurant
-        fields = ('id', 'owner', 'name', 'logo', 'phone', 'address', 'currency', 'created_at')
+        fields = ('id', 'owner', 'name', 'logo', 'phone', 'address', 'currency', 'is_accepting_orders', 'timezone', 'created_at')
 
 
     def validate(self, data):
@@ -343,7 +343,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        fields = ('id', 'menu_item', 'menu_item_name', 'menu_item_price', 'quantity', 'price', 'status', 'round', 'created_at')
+        fields = ('id', 'menu_item', 'menu_item_name', 'menu_item_price', 'quantity', 'price', 'status', 'round', 'notes', 'created_at')
         read_only_fields = ('price', 'created_at')
 
 
@@ -360,9 +360,14 @@ class OrderSerializer(serializers.ModelSerializer):
             'table_number', 
             'customer_name', 
             'status', 
+            'payment_method',
+            'is_paid',
+            'payment_txn_id',
             'total_price', 
             'items', 
             'tracking_token', 
+            'cancellation_reason',
+            'is_recovered',
             'rounds_count',
             'created_at', 
             'updated_at'

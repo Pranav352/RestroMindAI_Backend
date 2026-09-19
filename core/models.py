@@ -21,6 +21,8 @@ class Restaurant(models.Model):
         ('£', 'GBP (£)'),
     ]
     currency = models.CharField(max_length=10, choices=CURRENCY_CHOICES, default='₹')
+    is_accepting_orders = models.BooleanField(default=True)
+    timezone = models.CharField(max_length=50, default='Asia/Kolkata')
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -105,6 +107,13 @@ class Order(models.Model):
         ('cancelled', 'Cancelled'),
     ]
 
+    PAYMENT_METHOD_CHOICES = [
+        ('cash', 'Cash'),
+        ('upi', 'UPI / QR'),
+        ('card', 'Credit / Debit Card'),
+        ('complimentary', 'Complimentary'),
+    ]
+
     restaurant = models.ForeignKey(
         Restaurant,
         on_delete=models.CASCADE,
@@ -113,8 +122,13 @@ class Order(models.Model):
     table_number = models.PositiveIntegerField(null=True, blank=True)
     customer_name = models.CharField(max_length=100, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    payment_method = models.CharField(max_length=100, blank=True, null=True)
+    is_paid = models.BooleanField(default=False)
+    payment_txn_id = models.CharField(max_length=100, blank=True, null=True)
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     tracking_token = models.UUIDField(default=uuid.uuid4, editable=False, null=True, blank=True)
+    cancellation_reason = models.CharField(max_length=50, blank=True, null=True)
+    is_recovered = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -181,6 +195,7 @@ class OrderItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)  # Price at the time of order
     status = models.CharField(max_length=20, choices=ITEM_STATUS_CHOICES, default='pending')
     round = models.PositiveIntegerField(default=1)
+    notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
