@@ -313,3 +313,9 @@ LOGGING = {
         },
     },
 }
+
+# VAPID Web Push Configuration
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', 'BDbtKc5nxdf84Yi7Fl1fR8sFPtref0GSgqLKTRDsKzQ4non6CBFg8eyoWyjIwgCB5bjCb5SiC4hwbPLNgNG5gV4')
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg3slyb5ctgdr6q2hI\nK7CLzjNtJjUh4+6wOfD+j3QCxoChRANCAAQ27SnOZ8XX/OGIuxZdX0fLBT7a3n9B\nkoKiyk0Q7Cs0OJ6J+ggRYPHsqFsoyMIAgeW4wm+UoguIcGzyzYDRuYFe\n-----END PRIVATE KEY-----\n')
+VAPID_ADMIN_EMAIL = os.getenv('VAPID_ADMIN_EMAIL', 'admin@restromind.ai')
+

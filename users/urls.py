@@ -3,7 +3,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     RegisterView, LoginView, LogoutView, MeView, MockUpgradeView,
     ResetPasswordWithPinView, ChangePasswordView, SystemSettingView,
-    SystemDiagnosticsView
+    SystemDiagnosticsView, VapidPublicKeyView, SubscribePushView
 )
 
 urlpatterns = [
@@ -17,6 +17,11 @@ urlpatterns = [
     path('system-diagnostics/', SystemDiagnosticsView.as_view(), name='system_diagnostics'),
     path('mock-upgrade/', MockUpgradeView.as_view(), name='auth_mock_upgrade'),
     path('reset-password-with-pin/', ResetPasswordWithPinView.as_view(), name='auth_reset_password_with_pin'),
+    
+    # Web Push Notification endpoints
+    path('push/vapid-public-key/', VapidPublicKeyView.as_view(), name='push_vapid_public_key'),
+    path('push/subscribe/', SubscribePushView.as_view(), name='push_subscribe'),
 ]
+
 
 

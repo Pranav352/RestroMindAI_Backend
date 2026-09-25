@@ -5,6 +5,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from django.conf import settings
+from .models import PushSubscription, Subscription, SystemSetting
 from .serializers import RegisterSerializer, UserSerializer, ResetPasswordWithPinSerializer, UserProfileUpdateSerializer, ChangePasswordSerializer, SystemSettingSerializer
 
 User = get_user_model()
@@ -219,6 +221,50 @@ class SystemDiagnosticsView(APIView):
             },
             "timestamp": timezone.now().isoformat()
         }, status=status.HTTP_200_OK)
+
+
+class VapidPublicKeyView(APIView):
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request):
+        return Response({
+            "publicKey": getattr(settings, 'VAPID_PUBLIC_KEY', '')
+        }, status=status.HTTP_200_OK)
+
+
+class SubscribePushView(APIView):
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request):
+        sub_data = request.data.get('subscription', {})
+        restaurant_id = request.data.get('restaurant_id', '')
+
+        endpoint = sub_data.get('endpoint')
+        keys = sub_data.get('keys', {})
+        p256dh = keys.get('p256dh')
+        auth = keys.get('auth')
+
+        if not endpoint or not p256dh or not auth:
+            return Response({'error': 'Invalid subscription payload'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user if request.user.is_authenticated else None
+
+        push_sub, created = PushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                'user': user,
+                'restaurant_id': str(restaurant_id) if restaurant_id else None,
+                'p256dh': p256dh,
+                'auth': auth,
+            }
+        )
+
+        return Response({
+            "success": True,
+            "message": "Push subscription registered successfully.",
+            "subscription_id": push_sub.id
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
 
 
 

@@ -539,6 +539,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         response['X-Accel-Buffering'] = 'no'
         return response
 
+    def perform_create(self, serializer):
+        order = serializer.save()
+        try:
+            from core.services.push_service import send_order_push_notification
+            send_order_push_notification(
+                restaurant_id=order.restaurant_id,
+                title=f"🚨 New Order #{order.id} (Table {order.table_number})",
+                message=f"New order placed by {order.customer_name or 'Customer'} on Table {order.table_number}.",
+                url="/orders"
+            )
+        except Exception as e:
+            print("Failed to dispatch push notification on create:", e)
+
     def perform_update(self, serializer):
         order = serializer.save()
         new_status = serializer.validated_data.get('status')
@@ -555,6 +568,17 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order.items.exclude(status='cancelled').update(status='served')
                 order.is_paid = True
                 order.save(update_fields=['is_paid'])
+
+            try:
+                from core.services.push_service import send_order_push_notification
+                send_order_push_notification(
+                    restaurant_id=order.restaurant_id,
+                    title=f"Order #{order.id} Status: {new_status.title()}",
+                    message=f"Order for Table {order.table_number} is now {new_status}.",
+                    url="/orders"
+                )
+            except Exception as e:
+                print("Failed to dispatch push notification on update:", e)
 
     @action(detail=True, methods=['patch'])
     def recover_payment(self, request, pk=None):
