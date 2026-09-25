@@ -158,6 +158,25 @@ class SystemSetting(models.Model):
         return f"Global System Settings (Maintenance: {self.maintenance_mode})"
 
 
+class PushSubscription(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='push_subscriptions'
+    )
+    restaurant_id = models.CharField(max_length=100, null=True, blank=True)
+    endpoint = models.TextField(unique=True)
+    p256dh = models.CharField(max_length=255)
+    auth = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"PushSub ({self.endpoint[:30]}...)"
+
+
+
 
 
 
