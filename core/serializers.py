@@ -109,10 +109,26 @@ class TableSerializer(serializers.ModelSerializer):
         if obj.qr_code:
             request = self.context.get('request')
             path = obj.qr_code
+            # Auto-regenerate file if missing on disk (e.g. after server restart/ephemeral disk wipe)
+            try:
+                import os
+                from django.conf import settings
+                full_path = os.path.join(settings.MEDIA_ROOT, path)
+                if not os.path.exists(full_path):
+                    from core.views import generate_table_qr_code
+                    generate_table_qr_code(obj.restaurant, obj.table_number, request, section=obj.section, label=obj.label)
+                    obj.refresh_from_db()
+                    path = obj.qr_code or path
+            except Exception as err:
+                print(f"Auto QR re-generation check warning: {err}")
+
             if not path.startswith('/media/') and not path.startswith('http://') and not path.startswith('https://'):
                 path = f"/media/{path}"
             if request:
-                return request.build_absolute_uri(path)
+                uri = request.build_absolute_uri(path)
+                if (request.headers.get('x-forwarded-proto') == 'https' or request.is_secure()) and uri.startswith('http://'):
+                    uri = uri.replace('http://', 'https://', 1)
+                return uri
             return path
         return None
 
@@ -123,7 +139,10 @@ class TableSerializer(serializers.ModelSerializer):
             if not path.startswith('/media/') and not path.startswith('http://') and not path.startswith('https://'):
                 path = f"/media/{path}"
             if request:
-                return request.build_absolute_uri(path)
+                uri = request.build_absolute_uri(path)
+                if (request.headers.get('x-forwarded-proto') == 'https' or request.is_secure()) and uri.startswith('http://'):
+                    uri = uri.replace('http://', 'https://', 1)
+                return uri
             return path
         return None
 
