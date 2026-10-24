@@ -439,6 +439,12 @@ class AdminRestaurantViewSet(viewsets.ModelViewSet):
 class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
 
+    def get_throttles(self):
+        if self.action == 'create':
+            self.throttle_scope = 'public_orders'
+            return super().get_throttles()
+        return []
+
     def get_permissions(self):
         if self.action in ['create', 'status', 'cancel', 'check_table', 'stream']:
             return [permissions.AllowAny()]

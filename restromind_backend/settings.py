@@ -209,6 +209,12 @@ STORAGES = {
 # Trust X-Forwarded-Proto header from Render's reverse proxy for HTTPS detection
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -253,6 +259,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'auth': '1000/minute' if ('test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]) else os.getenv('AUTH_THROTTLE_RATE', '5/minute'),
+        'public_orders': '1000/minute' if ('test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]) else os.getenv('PUBLIC_ORDERS_THROTTLE_RATE', '15/minute'),
     },
 }
 
@@ -263,8 +270,8 @@ jwt_refresh_days = int(os.getenv('JWT_REFRESH_TOKEN_LIFETIME_DAYS', '7'))
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=jwt_access_minutes),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=jwt_refresh_days),
-    'ROTATE_REFRESH_TOKENS': False,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
     'VERIFYING_KEY': None,
@@ -315,7 +322,16 @@ LOGGING = {
 }
 
 # VAPID Web Push Configuration
-VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', 'BDbtKc5nxdf84Yi7Fl1fR8sFPtref0GSgqLKTRDsKzQ4non6CBFg8eyoWyjIwgCB5bjCb5SiC4hwbPLNgNG5gV4')
-VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg3slyb5ctgdr6q2hI\nK7CLzjNtJjUh4+6wOfD+j3QCxoChRANCAAQ27SnOZ8XX/OGIuxZdX0fLBT7a3n9B\nkoKiyk0Q7Cs0OJ6J+ggRYPHsqFsoyMIAgeW4wm+UoguIcGzyzYDRuYFe\n-----END PRIVATE KEY-----\n')
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY')
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY')
 VAPID_ADMIN_EMAIL = os.getenv('VAPID_ADMIN_EMAIL', 'admin@restromind.ai')
+
+if not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
+    if DEBUG:
+        # Development / local fallback
+        VAPID_PUBLIC_KEY = 'BDbtKc5nxdf84Yi7Fl1fR8sFPtref0GSgqLKTRDsKzQ4non6CBFg8eyoWyjIwgCB5bjCb5SiC4hwbPLNgNG5gV4'
+        VAPID_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg3slyb5ctgdr6q2hI\nK7CLzjNtJjUh4+6wOfD+j3QCxoChRANCAAQ27SnOZ8XX/OGIuxZdX0fLBT7a3n9B\nkoKiyk0Q7Cs0OJ6J+ggRYPHsqFsoyMIAgeW4wm+UoguIcGzyzYDRuYFe\n-----END PRIVATE KEY-----\n'
+    else:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured("VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY environment variables must be configured in production mode.")
 
