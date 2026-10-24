@@ -397,91 +397,95 @@ class OrderSerializer(serializers.ModelSerializer):
         return obj.items.values('round').distinct().count() or 1
 
     def create(self, validated_data):
+        from django.db import transaction
         from django.db.models import Max
+
         items_data = validated_data.pop('items')
         restaurant = validated_data['restaurant']
         tracking_token = validated_data.get('tracking_token')
 
-        # Check if customer is adding items to an existing active order (same session)
-        existing_order = None
-        if tracking_token:
-            existing_order = Order.objects.filter(
-                tracking_token=tracking_token,
-                restaurant=restaurant
-            ).exclude(status__in=['completed', 'cancelled']).first()
+        with transaction.atomic():
+            # Check if customer is adding items to an existing active order (same session)
+            existing_order = None
+            if tracking_token:
+                existing_order = Order.objects.select_for_update().filter(
+                    tracking_token=tracking_token,
+                    restaurant=restaurant
+                ).exclude(status__in=['completed', 'cancelled']).first()
 
-        if existing_order:
-            # Append new items to existing order as a new round
-            current_max_round = existing_order.items.aggregate(Max('round'))['round__max'] or 1
-            new_round = current_max_round + 1
+            if existing_order:
+                # Append new items to existing order as a new round
+                current_max_round = existing_order.items.aggregate(Max('round'))['round__max'] or 1
+                new_round = current_max_round + 1
 
+                for item_data in items_data:
+                    menu_item = item_data['menu_item']
+                    if menu_item.category.restaurant != restaurant:
+                        raise serializers.ValidationError({"items": f"Menu item {menu_item.name} does not belong to this restaurant."})
+                    
+                    OrderItem.objects.create(
+                        order=existing_order,
+                        menu_item=menu_item,
+                        quantity=item_data['quantity'],
+                        price=menu_item.price,
+                        notes=item_data.get('notes', '') or '',
+                        status='pending',
+                        round=new_round
+                    )
+
+                # Update customer name if provided
+                customer_name = validated_data.get('customer_name')
+                if customer_name and not existing_order.customer_name:
+                    existing_order.customer_name = customer_name
+
+                existing_order.recalculate_total()
+                # If the order was served or pending, set it to preparing to alert the kitchen
+                if existing_order.status in ('served', 'pending'):
+                    existing_order.status = 'preparing'
+                    existing_order.save(update_fields=['status', 'customer_name', 'updated_at'])
+                else:
+                    existing_order.save(update_fields=['customer_name', 'updated_at'])
+
+                return existing_order
+
+            # Standard new order creation (Round 1)
+            table_number = validated_data.get('table_number')
+            if table_number:
+                # Check if table is currently occupied with an active dining session
+                occupied_order = Order.objects.filter(
+                    restaurant=restaurant,
+                    table_number=table_number,
+                    status__in=['pending', 'preparing', 'served']
+                ).first()
+                if occupied_order:
+                    raise serializers.ValidationError({
+                        "table_number": f"Table {table_number} currently has an active dining session. Extra items can be ordered from the table's primary device."
+                    })
+
+                Table.objects.select_for_update().get_or_create(restaurant=restaurant, table_number=table_number)
+
+            order = Order.objects.create(**validated_data)
+            total_price = 0
             for item_data in items_data:
                 menu_item = item_data['menu_item']
                 if menu_item.category.restaurant != restaurant:
                     raise serializers.ValidationError({"items": f"Menu item {menu_item.name} does not belong to this restaurant."})
                 
+                price = menu_item.price
                 OrderItem.objects.create(
-                    order=existing_order,
+                    order=order,
                     menu_item=menu_item,
                     quantity=item_data['quantity'],
-                    price=menu_item.price,
+                    price=price,
+                    notes=item_data.get('notes', '') or '',
                     status='pending',
-                    round=new_round
+                    round=1
                 )
-
-            # Update customer name if provided
-            customer_name = validated_data.get('customer_name')
-            if customer_name and not existing_order.customer_name:
-                existing_order.customer_name = customer_name
-
-            existing_order.recalculate_total()
-            # If the order was served or pending, set it to preparing to alert the kitchen
-            if existing_order.status in ('served', 'pending'):
-                existing_order.status = 'preparing'
-                existing_order.save(update_fields=['status', 'customer_name', 'updated_at'])
-            else:
-                existing_order.save(update_fields=['customer_name', 'updated_at'])
-
-            return existing_order
-
-        # Standard new order creation (Round 1)
-        table_number = validated_data.get('table_number')
-        if table_number:
-            # Check if table is currently occupied with an active dining session
-            occupied_order = Order.objects.filter(
-                restaurant=restaurant,
-                table_number=table_number,
-                status__in=['pending', 'preparing', 'served']
-            ).first()
-            if occupied_order:
-                raise serializers.ValidationError({
-                    "table_number": f"Table {table_number} currently has an active dining session. Extra items can be ordered from the table's primary device."
-                })
-
-            Table.objects.get_or_create(restaurant=restaurant, table_number=table_number)
-
-        order = Order.objects.create(**validated_data)
-        total_price = 0
-        for item_data in items_data:
-            menu_item = item_data['menu_item']
-            if menu_item.category.restaurant != restaurant:
-                order.delete()
-                raise serializers.ValidationError({"items": f"Menu item {menu_item.name} does not belong to this restaurant."})
+                total_price += price * item_data['quantity']
             
-            price = menu_item.price
-            OrderItem.objects.create(
-                order=order,
-                menu_item=menu_item,
-                quantity=item_data['quantity'],
-                price=price,
-                status='pending',
-                round=1
-            )
-            total_price += price * item_data['quantity']
-        
-        order.total_price = total_price
-        order.save(update_fields=['total_price', 'updated_at'])
-        return order
+            order.total_price = total_price
+            order.save(update_fields=['total_price', 'updated_at'])
+            return order
 
 
 
