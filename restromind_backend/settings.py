@@ -34,14 +34,17 @@ render_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', '')
 
 if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',') if host.strip()]
+    for host in [render_host, '.onrender.com', 'localhost', '127.0.0.1']:
+        if host and host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(host)
 elif render_host:
-    ALLOWED_HOSTS = [render_host, '.onrender.com']
+    ALLOWED_HOSTS = [render_host, '.onrender.com', 'localhost', '127.0.0.1']
 else:
     if DEBUG:
         ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]']
     else:
         # Default to allowing onrender.com hostnames if running on Render platform
-        ALLOWED_HOSTS = ['.onrender.com']
+        ALLOWED_HOSTS = ['.onrender.com', 'localhost', '127.0.0.1']
 
 # CORS
 CORS_ALLOWED_ORIGINS = [
@@ -50,11 +53,16 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',')
-    if origin.strip()
-]
+CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
+if CSRF_TRUSTED_ORIGINS_ENV:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()]
+else:
+    CSRF_TRUSTED_ORIGINS = [
+        'https://*.onrender.com',
+        'https://restro-mind-ai-frontend.vercel.app',
+    ]
+    if render_host:
+        CSRF_TRUSTED_ORIGINS.append(f'https://{render_host}')
 
 
 # Application definition
@@ -209,7 +217,7 @@ STORAGES = {
 # Trust X-Forwarded-Proto header from Render's reverse proxy for HTTPS detection
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() in ('true', '1')
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
@@ -322,16 +330,10 @@ LOGGING = {
 }
 
 # VAPID Web Push Configuration
-VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY')
-VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY')
-VAPID_ADMIN_EMAIL = os.getenv('VAPID_ADMIN_EMAIL', 'admin@restromind.ai')
+DEFAULT_VAPID_PUBLIC_KEY = 'BDbtKc5nxdf84Yi7Fl1fR8sFPtref0GSgqLKTRDsKzQ4non6CBFg8eyoWyjIwgCB5bjCb5SiC4hwbPLNgNG5gV4'
+DEFAULT_VAPID_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg3slyb5ctgdr6q2hI\nK7CLzjNtJjUh4+6wOfD+j3QCxoChRANCAAQ27SnOZ8XX/OGIuxZdX0fLBT7a3n9B\nkoKiyk0Q7Cs0OJ6J+ggRYPHsqFsoyMIAgeW4wm+UoguIcGzyzYDRuYFe\n-----END PRIVATE KEY-----\n'
 
-if not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
-    if DEBUG:
-        # Development / local fallback
-        VAPID_PUBLIC_KEY = 'BDbtKc5nxdf84Yi7Fl1fR8sFPtref0GSgqLKTRDsKzQ4non6CBFg8eyoWyjIwgCB5bjCb5SiC4hwbPLNgNG5gV4'
-        VAPID_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg3slyb5ctgdr6q2hI\nK7CLzjNtJjUh4+6wOfD+j3QCxoChRANCAAQ27SnOZ8XX/OGIuxZdX0fLBT7a3n9B\nkoKiyk0Q7Cs0OJ6J+ggRYPHsqFsoyMIAgeW4wm+UoguIcGzyzYDRuYFe\n-----END PRIVATE KEY-----\n'
-    else:
-        from django.core.exceptions import ImproperlyConfigured
-        raise ImproperlyConfigured("VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY environment variables must be configured in production mode.")
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY') or DEFAULT_VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY') or DEFAULT_VAPID_PRIVATE_KEY
+VAPID_ADMIN_EMAIL = os.getenv('VAPID_ADMIN_EMAIL', 'admin@restromind.ai')
 
