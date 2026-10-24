@@ -59,7 +59,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         if hasattr(self.request, 'tenant_id'):
-            return Category.objects.filter(restaurant_id=self.request.tenant_id)
+            return Category.objects.filter(restaurant_id=self.request.tenant_id, is_deleted=False)
         return Category.objects.none()
 
 
@@ -70,7 +70,7 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         if hasattr(self.request, 'tenant_id'):
-            return MenuItem.objects.filter(category__restaurant_id=self.request.tenant_id)
+            return MenuItem.objects.filter(category__restaurant_id=self.request.tenant_id, is_deleted=False)
         return MenuItem.objects.none()
 
 
@@ -761,7 +761,7 @@ class OwnerDashboardStatsView(APIView):
     def get(self, request):
         from django.utils import timezone
         from django.db.models import Sum, F, Q
-        from datetime import timedelta, timezone as dt_timezone
+        from datetime import datetime, timedelta, timezone as dt_timezone
 
         tenant_id = getattr(request, 'tenant_id', None)
         restaurant = None
@@ -804,8 +804,8 @@ class OwnerDashboardStatsView(APIView):
         now_local = bounds['now_local']
 
         # General counts
-        categories_count = Category.objects.filter(restaurant=restaurant).count()
-        items_count = MenuItem.objects.filter(category__restaurant=restaurant).count()
+        categories_count = Category.objects.filter(restaurant=restaurant, is_deleted=False).count()
+        items_count = MenuItem.objects.filter(category__restaurant=restaurant, is_deleted=False).count()
         tables_count = Table.objects.filter(restaurant=restaurant).count()
 
         # Orders querysets for timeframe & comparison
@@ -868,7 +868,9 @@ class OwnerDashboardStatsView(APIView):
             {
                 "name": item['menu_item__name'] or 'Unknown Item',
                 "total_qty": item['total_qty'],
-                "total_sales": float(item['total_sales'] or 0.0)
+                "quantity": item['total_qty'],
+                "total_sales": float(item['total_sales'] or 0.0),
+                "revenue": float(item['total_sales'] or 0.0)
             }
             for item in top_items_qs
         ]
@@ -902,6 +904,77 @@ class OwnerDashboardStatsView(APIView):
                     "revenue": h_revenue,
                     "orders": h_orders.count()
                 })
+        elif timeframe in ['all', 'all_time']:
+            tz = bounds['restaurant_tz']
+            earliest_order = period_orders.order_by('created_at').first()
+            if earliest_order:
+                e_date = earliest_order.created_at.astimezone(tz).date()
+                span_days = (now_local.date() - e_date).days + 1
+
+                if span_days <= 31:
+                    # Daily intervals
+                    for d in range(span_days):
+                        day_date = e_date + timedelta(days=d)
+                        d_start = datetime.combine(day_date, datetime.min.time()).replace(tzinfo=tz).astimezone(dt_timezone.utc)
+                        d_end = datetime.combine(day_date, datetime.max.time()).replace(tzinfo=tz).astimezone(dt_timezone.utc)
+                        d_orders = period_orders.filter(created_at__gte=d_start, created_at__lte=d_end)
+                        d_rev = float(d_orders.filter(revenue_filter).aggregate(Sum('total_price'))['total_price__sum'] or 0.0)
+                        hourly_sales.append({
+                            "label": day_date.strftime("%b %d"),
+                            "full_label": day_date.strftime("%a, %b %d, %Y"),
+                            "revenue": d_rev,
+                            "orders": d_orders.count()
+                        })
+                elif span_days <= 180:
+                    # Weekly intervals (align to week start - Monday)
+                    curr_w = e_date - timedelta(days=e_date.weekday())
+                    while curr_w <= now_local.date():
+                        w_end_d = curr_w + timedelta(days=6)
+                        w_start = datetime.combine(curr_w, datetime.min.time()).replace(tzinfo=tz).astimezone(dt_timezone.utc)
+                        w_end = datetime.combine(w_end_d, datetime.max.time()).replace(tzinfo=tz).astimezone(dt_timezone.utc)
+                        w_orders = period_orders.filter(created_at__gte=w_start, created_at__lte=w_end)
+                        w_rev = float(w_orders.filter(revenue_filter).aggregate(Sum('total_price'))['total_price__sum'] or 0.0)
+
+                        if curr_w.month == w_end_d.month:
+                            short_lbl = f"{curr_w.strftime('%b %d')}-{w_end_d.strftime('%d')}"
+                        else:
+                            short_lbl = f"{curr_w.strftime('%b %d')}-{w_end_d.strftime('%b %d')}"
+
+                        hourly_sales.append({
+                            "label": short_lbl,
+                            "full_label": f"{curr_w.strftime('%b %d, %Y')} - {w_end_d.strftime('%b %d, %Y')}",
+                            "revenue": w_rev,
+                            "orders": w_orders.count()
+                        })
+                        curr_w += timedelta(days=7)
+                else:
+                    # Monthly intervals for > 180 days
+                    curr = datetime(e_date.year, e_date.month, 1, tzinfo=tz)
+                    while curr <= now_local:
+                        if curr.month == 12:
+                            next_m = curr.replace(year=curr.year + 1, month=1)
+                        else:
+                            next_m = curr.replace(month=curr.month + 1)
+                        m_start = curr.astimezone(dt_timezone.utc)
+                        m_end = next_m.astimezone(dt_timezone.utc)
+                        m_orders = period_orders.filter(created_at__gte=m_start, created_at__lt=m_end)
+                        m_rev = float(m_orders.filter(revenue_filter).aggregate(Sum('total_price'))['total_price__sum'] or 0.0)
+                        hourly_sales.append({
+                            "label": curr.strftime("%b %Y"),
+                            "full_label": curr.strftime("%B %Y"),
+                            "revenue": m_rev,
+                            "orders": m_orders.count()
+                        })
+                        curr = next_m
+            else:
+                for d in range(6, -1, -1):
+                    day_d = (now_local - timedelta(days=d)).date()
+                    hourly_sales.append({
+                        "label": day_d.strftime("%b %d"),
+                        "full_label": day_d.strftime("%a, %b %d, %Y"),
+                        "revenue": 0.0,
+                        "orders": 0
+                    })
         else:
             num_days = 7 if timeframe == '7d' else 30
             for d in range(num_days - 1, -1, -1):
@@ -915,6 +988,7 @@ class OwnerDashboardStatsView(APIView):
 
                 hourly_sales.append({
                     "label": day_start_local.strftime("%a, %b %d"),
+                    "full_label": day_start_local.strftime("%a, %b %d, %Y"),
                     "revenue": d_revenue,
                     "orders": d_orders.count()
                 })
@@ -925,7 +999,8 @@ class OwnerDashboardStatsView(APIView):
             max_slot = max(hourly_sales, key=lambda x: (x['revenue'], x['orders']))
             if max_slot and (max_slot['revenue'] > 0 or max_slot['orders'] > 0):
                 peak_hour = {
-                    "label": max_slot['label'],
+                    "label": max_slot.get('full_label') or max_slot['label'],
+                    "slot": max_slot['label'],
                     "revenue": max_slot['revenue'],
                     "orders": max_slot['orders']
                 }
@@ -945,9 +1020,12 @@ class OwnerDashboardStatsView(APIView):
         for c in cat_qs[:5]:
             c_sales = float(c['total_sales'] or 0.0)
             c_percent = round((c_sales / total_cat_sales_sum * 100), 1) if total_cat_sales_sum > 0 else 0.0
+            cat_name = c['menu_item__category__name'] or 'General'
             category_sales.append({
-                "name": c['menu_item__category__name'] or 'General',
+                "name": cat_name,
+                "category": cat_name,
                 "total_sales": c_sales,
+                "revenue": c_sales,
                 "total_qty": c['total_qty'],
                 "percentage": c_percent
             })
@@ -961,6 +1039,8 @@ class OwnerDashboardStatsView(APIView):
             "restaurant_id": restaurant.id,
             "restaurant_name": restaurant.name,
             "currency": restaurant.currency,
+            "tax_percentage": float(restaurant.tax_percentage),
+            "service_charge_percentage": float(restaurant.service_charge_percentage),
             "is_accepting_orders": restaurant.is_accepting_orders,
             "stats": {
                 "categories_count": categories_count,

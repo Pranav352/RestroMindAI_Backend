@@ -21,6 +21,8 @@ class Restaurant(models.Model):
         ('£', 'GBP (£)'),
     ]
     currency = models.CharField(max_length=10, choices=CURRENCY_CHOICES, default='₹')
+    tax_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=5.00)
+    service_charge_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     is_accepting_orders = models.BooleanField(default=True)
     timezone = models.CharField(max_length=50, default='Asia/Kolkata')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -47,6 +49,7 @@ class Category(models.Model):
         related_name='subcategories'
     )
     name = models.CharField(max_length=100)
+    is_deleted = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['name']
@@ -56,6 +59,16 @@ class Category(models.Model):
         if self.parent:
             return f"{self.name} (Sub of {self.parent.name}) - {self.restaurant.name}"
         return f"{self.name} - {self.restaurant.name}"
+
+    def delete(self, using=None, keep_parents=False):
+        """Soft delete category and cascade soft delete to subcategories and menu items."""
+        self.is_deleted = True
+        self.save(update_fields=['is_deleted'])
+        self.subcategories.filter(is_deleted=False).update(is_deleted=True)
+        self.menu_items.filter(is_deleted=False).update(is_deleted=True)
+
+    def hard_delete(self, using=None, keep_parents=False):
+        super().delete(using=using, keep_parents=keep_parents)
 
 
 class MenuItem(models.Model):
@@ -69,12 +82,21 @@ class MenuItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     image = models.ImageField(upload_to='menu_items/', max_length=500, null=True, blank=True)
     is_available = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['name']
 
     def __str__(self):
         return self.name
+
+    def delete(self, using=None, keep_parents=False):
+        """Soft delete menu item preserving order records and financial history."""
+        self.is_deleted = True
+        self.save(update_fields=['is_deleted'])
+
+    def hard_delete(self, using=None, keep_parents=False):
+        super().delete(using=using, keep_parents=keep_parents)
 
 
 class Table(models.Model):
@@ -125,6 +147,11 @@ class Order(models.Model):
     payment_method = models.CharField(max_length=100, blank=True, null=True)
     is_paid = models.BooleanField(default=False)
     payment_txn_id = models.CharField(max_length=100, blank=True, null=True)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tax_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    service_charge_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    service_charge_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     tracking_token = models.UUIDField(default=uuid.uuid4, editable=False, null=True, blank=True)
     cancellation_reason = models.CharField(max_length=50, blank=True, null=True)
@@ -143,10 +170,30 @@ class Order(models.Model):
         return self.items.values('round').distinct().count() or 1
 
     def recalculate_total(self):
-        """Recalculate total price based on non-cancelled line items."""
+        """Recalculate subtotal, taxes, service charges and grand total payable."""
+        from decimal import Decimal
         active_items = self.items.exclude(status='cancelled')
-        self.total_price = sum(item.price * item.quantity for item in active_items)
-        self.save(update_fields=['total_price', 'updated_at'])
+        food_subtotal = sum(item.price * item.quantity for item in active_items)
+        self.subtotal = Decimal(str(food_subtotal))
+
+        # Use snapshot percentages if already assigned, otherwise inherit restaurant configuration
+        tax_rate = self.tax_percentage if (self.tax_percentage is not None and self.tax_percentage > 0) else getattr(self.restaurant, 'tax_percentage', Decimal('0.00'))
+        sc_rate = self.service_charge_percentage if (self.service_charge_percentage is not None and self.service_charge_percentage > 0) else getattr(self.restaurant, 'service_charge_percentage', Decimal('0.00'))
+
+        self.tax_percentage = Decimal(str(tax_rate or '0.00'))
+        self.service_charge_percentage = Decimal(str(sc_rate or '0.00'))
+        self.tax_amount = round(self.subtotal * (self.tax_percentage / Decimal('100.0')), 2)
+        self.service_charge_amount = round(self.subtotal * (self.service_charge_percentage / Decimal('100.0')), 2)
+        self.total_price = self.subtotal + self.tax_amount + self.service_charge_amount
+        self.save(update_fields=[
+            'subtotal',
+            'tax_percentage',
+            'tax_amount',
+            'service_charge_percentage',
+            'service_charge_amount',
+            'total_price',
+            'updated_at'
+        ])
 
     def sync_overall_status(self):
         """Synchronize the order-level status based on individual item rounds."""
@@ -189,7 +236,10 @@ class OrderItem(models.Model):
     )
     menu_item = models.ForeignKey(
         MenuItem,
-        on_delete=models.CASCADE
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='order_items'
     )
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2)  # Price at the time of order
