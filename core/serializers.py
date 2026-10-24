@@ -39,8 +39,21 @@ class RestaurantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Restaurant
-        fields = ('id', 'owner', 'name', 'logo', 'phone', 'address', 'currency', 'is_accepting_orders', 'timezone', 'created_at')
+        fields = (
+            'id', 'owner', 'name', 'logo', 'phone', 'address', 'currency',
+            'tax_percentage', 'service_charge_percentage',
+            'is_accepting_orders', 'timezone', 'created_at'
+        )
 
+    def validate_tax_percentage(self, value):
+        if value < 0 or value > 100:
+            raise serializers.ValidationError("Tax percentage must be between 0% and 100%.")
+        return value
+
+    def validate_service_charge_percentage(self, value):
+        if value < 0 or value > 100:
+            raise serializers.ValidationError("Service charge percentage must be between 0% and 100%.")
+        return value
 
     def validate(self, data):
         request = self.context.get('request')
@@ -59,9 +72,7 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ('id', 'restaurant', 'name', 'parent', 'subcategories')
 
     def get_subcategories(self, obj):
-        # We can recursively serialize subcategories here if needed, 
-        # but let's just return minimal info to avoid deep nesting issues if they are deep.
-        return CategorySerializer(obj.subcategories.all(), many=True, context=self.context).data
+        return CategorySerializer(obj.subcategories.filter(is_deleted=False), many=True, context=self.context).data
 
     def validate_restaurant(self, value):
         request = self.context.get('request')
@@ -183,12 +194,12 @@ class PublicCategorySerializer(serializers.ModelSerializer):
         fields = ('id', 'name', 'menu_items', 'subcategories')
 
     def get_menu_items(self, obj):
-        # Only return items that are available
-        available_items = obj.menu_items.filter(is_available=True)
+        # Only return items that are available and not deleted
+        available_items = obj.menu_items.filter(is_available=True, is_deleted=False)
         return PublicMenuItemSerializer(available_items, many=True, context=self.context).data
 
     def get_subcategories(self, obj):
-        return PublicCategorySerializer(obj.subcategories.all(), many=True, context=self.context).data
+        return PublicCategorySerializer(obj.subcategories.filter(is_deleted=False), many=True, context=self.context).data
 
 
 class PublicRestaurantSerializer(serializers.ModelSerializer):
@@ -196,12 +207,15 @@ class PublicRestaurantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Restaurant
-        fields = ('id', 'name', 'logo', 'phone', 'address', 'currency', 'categories')
+        fields = (
+            'id', 'name', 'logo', 'phone', 'address', 'currency',
+            'tax_percentage', 'service_charge_percentage',
+            'is_accepting_orders', 'categories'
+        )
 
     def get_categories(self, obj):
-        # Only return top-level categories here. 
-        # Subcategories are nested inside their parent categories via PublicCategorySerializer.
-        top_categories = obj.categories.filter(parent__isnull=True)
+        # Only return top-level, non-deleted categories
+        top_categories = obj.categories.filter(parent__isnull=True, is_deleted=False)
         return PublicCategorySerializer(top_categories, many=True, context=self.context).data
 
 
@@ -266,7 +280,8 @@ class AdminUserSerializer(serializers.ModelSerializer):
             ).count()
 
             menu_items_count = MenuItem.objects.filter(
-                category__restaurant__owner=obj
+                category__restaurant__owner=obj,
+                is_deleted=False
             ).count()
 
             tables_count = Table.objects.filter(
@@ -357,13 +372,19 @@ class AdminRestaurantSerializer(serializers.ModelSerializer):
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
-    menu_item_name = serializers.CharField(source='menu_item.name', read_only=True)
-    menu_item_price = serializers.DecimalField(source='menu_item.price', max_digits=10, decimal_places=2, read_only=True)
+    menu_item_name = serializers.SerializerMethodField()
+    menu_item_price = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
         fields = ('id', 'menu_item', 'menu_item_name', 'menu_item_price', 'quantity', 'price', 'status', 'round', 'notes', 'created_at')
         read_only_fields = ('price', 'created_at')
+
+    def get_menu_item_name(self, obj):
+        return obj.menu_item.name if obj.menu_item else "Deleted Item"
+
+    def get_menu_item_price(self, obj):
+        return str(obj.menu_item.price) if obj.menu_item else str(obj.price)
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -382,6 +403,11 @@ class OrderSerializer(serializers.ModelSerializer):
             'payment_method',
             'is_paid',
             'payment_txn_id',
+            'subtotal',
+            'tax_percentage',
+            'tax_amount',
+            'service_charge_percentage',
+            'service_charge_amount',
             'total_price', 
             'items', 
             'tracking_token', 
@@ -391,7 +417,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'created_at', 
             'updated_at'
         )
-        read_only_fields = ('total_price', 'created_at', 'updated_at')
+        read_only_fields = ('subtotal', 'tax_amount', 'service_charge_amount', 'total_price', 'created_at', 'updated_at')
 
     def get_rounds_count(self, obj):
         return obj.items.values('round').distinct().count() or 1
@@ -465,7 +491,6 @@ class OrderSerializer(serializers.ModelSerializer):
                 Table.objects.select_for_update().get_or_create(restaurant=restaurant, table_number=table_number)
 
             order = Order.objects.create(**validated_data)
-            total_price = 0
             for item_data in items_data:
                 menu_item = item_data['menu_item']
                 if menu_item.category.restaurant != restaurant:
@@ -481,10 +506,8 @@ class OrderSerializer(serializers.ModelSerializer):
                     status='pending',
                     round=1
                 )
-                total_price += price * item_data['quantity']
             
-            order.total_price = total_price
-            order.save(update_fields=['total_price', 'updated_at'])
+            order.recalculate_total()
             return order
 
 

@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 import os
 from django.conf import settings
 
-from .models import Restaurant, Category, MenuItem, Table
+from .models import Restaurant, Category, MenuItem, Table, Order, OrderItem
 
 User = get_user_model()
 
@@ -62,9 +62,11 @@ class CoreModelTests(TestCase):
         self.assertEqual(str(menu_item), "Margherita Pizza")
         self.assertIn(menu_item, category.menu_items.all())
 
-        # Test cascade delete on category delete
+        # Test soft delete on category delete cascades to items
         category.delete()
-        self.assertFalse(MenuItem.objects.filter(id=menu_item.id).exists())
+        self.assertTrue(Category.objects.get(id=category.id).is_deleted)
+        self.assertTrue(MenuItem.objects.get(id=menu_item.id).is_deleted)
+        self.assertFalse(MenuItem.objects.filter(id=menu_item.id, is_deleted=False).exists())
 
     def test_table_creation_and_unique_constraint(self):
         table = Table.objects.create(
@@ -315,6 +317,75 @@ class AdminAPITests(APITestCase):
         response = self.client.delete(restaurant_detail_url)
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Restaurant.objects.filter(id=self.restaurant.id).exists())
+
+    def test_tax_and_service_charge_computation(self):
+        """Task 3.1: Verify statutory tax and optional service charges are computed accurately."""
+        from decimal import Decimal
+        self.restaurant.tax_percentage = Decimal('5.00')
+        self.restaurant.service_charge_percentage = Decimal('2.50')
+        self.restaurant.save()
+
+        category = Category.objects.create(restaurant=self.restaurant, name="Main Course")
+        dish = MenuItem.objects.create(
+            category=category,
+            name="Paneer Butter Masala",
+            price=Decimal('250.00'),
+            is_available=True
+        )
+
+        order = Order.objects.create(
+            restaurant=self.restaurant,
+            table_number=3,
+            customer_name="Alice"
+        )
+        OrderItem.objects.create(
+            order=order,
+            menu_item=dish,
+            quantity=2,
+            price=dish.price
+        )
+
+        order.recalculate_total()
+        self.assertEqual(order.subtotal, Decimal('500.00'))
+        self.assertEqual(order.tax_amount, Decimal('25.00')) # 5% of 500
+        self.assertEqual(order.service_charge_amount, Decimal('12.50')) # 2.5% of 500
+        self.assertEqual(order.total_price, Decimal('537.50')) # 500 + 25 + 12.50
+
+    def test_soft_delete_preserves_historical_order_records(self):
+        """Task 3.3: Verify soft-deletion of Category and MenuItem preserves Order and OrderItem records."""
+        from decimal import Decimal
+        category = Category.objects.create(restaurant=self.restaurant, name="Beverages")
+        dish = MenuItem.objects.create(
+            category=category,
+            name="Cold Coffee",
+            price=Decimal('120.00'),
+            is_available=True
+        )
+
+        order = Order.objects.create(restaurant=self.restaurant, table_number=1)
+        order_item = OrderItem.objects.create(
+            order=order,
+            menu_item=dish,
+            quantity=1,
+            price=dish.price
+        )
+
+        # Soft delete the dish
+        dish.delete()
+        self.assertTrue(dish.is_deleted)
+
+        # Order and OrderItem must remain completely intact
+        self.assertTrue(Order.objects.filter(id=order.id).exists())
+        self.assertTrue(OrderItem.objects.filter(id=order_item.id).exists())
+        order_item.refresh_from_db()
+        self.assertEqual(order_item.price, Decimal('120.00'))
+
+        # Soft delete category
+        category.delete()
+        self.assertTrue(category.is_deleted)
+        self.assertTrue(MenuItem.objects.get(id=dish.id).is_deleted)
+        self.assertTrue(OrderItem.objects.filter(id=order_item.id).exists())
+
 
 
 
