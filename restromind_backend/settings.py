@@ -268,6 +268,8 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'auth': '1000/minute' if ('test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]) else os.getenv('AUTH_THROTTLE_RATE', '5/minute'),
         'public_orders': '1000/minute' if ('test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]) else os.getenv('PUBLIC_ORDERS_THROTTLE_RATE', '15/minute'),
+        'public_menu': '1000/minute' if ('test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]) else os.getenv('PUBLIC_MENU_THROTTLE_RATE', '60/minute'),
+        'ai_generate': '1000/minute' if ('test' in sys.argv or 'test_coverage' in sys.argv or 'manage.py' not in sys.argv[0]) else os.getenv('AI_GENERATE_THROTTLE_RATE', '10/minute'),
     },
 }
 

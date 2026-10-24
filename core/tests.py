@@ -387,5 +387,92 @@ class AdminAPITests(APITestCase):
         self.assertTrue(OrderItem.objects.filter(id=order_item.id).exists())
 
 
+class ThrottlingAPITests(APITestCase):
+    def setUp(self):
+        from users.models import Subscription, SystemSetting
+        from django.core.cache import cache
+        cache.clear()
+        self.user = User.objects.create_user(
+            email="throttle_owner@restromind.com",
+            password="securepassword123",
+            role="owner"
+        )
+        self.subscription = Subscription.objects.create(
+            user=self.user,
+            status="active"
+        )
+        self.restaurant = Restaurant.objects.create(
+            owner=self.user,
+            name="Throttle Diner",
+            phone="9999999999",
+            address="456 Limit St"
+        )
+        self.public_menu_url = reverse('public-menu', kwargs={'restaurant_id': self.restaurant.id})
+        self.ai_menu_url = reverse('ai-menu-generate')
+
+    def test_public_menu_allowed_within_rate(self):
+        response = self.client.get(self.public_menu_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_public_menu_throttling_exceeded(self):
+        from django.core.cache import cache
+        cache.clear()
+        with patch.dict('rest_framework.settings.api_settings.DEFAULT_THROTTLE_RATES', {'public_menu': '2/minute'}):
+            r1 = self.client.get(self.public_menu_url)
+            r2 = self.client.get(self.public_menu_url)
+            self.assertEqual(r1.status_code, status.HTTP_200_OK)
+            self.assertEqual(r2.status_code, status.HTTP_200_OK)
+            r3 = self.client.get(self.public_menu_url)
+            self.assertEqual(r3.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+            self.assertIn("Request was throttled", str(r3.data))
+
+    def test_ai_menu_generate_allowed_within_rate(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(
+            self.ai_menu_url,
+            {"name": "Paneer Butter Masala", "category": "Curry", "keywords": "creamy, rich"},
+            format="json",
+            HTTP_X_TENANT_ID=str(self.restaurant.id)
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["success"])
+        self.assertIn("Paneer Butter Masala", response.data["description"])
+
+    def test_ai_menu_generate_throttling_exceeded(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client.force_authenticate(user=self.user)
+        with patch.dict('rest_framework.settings.api_settings.DEFAULT_THROTTLE_RATES', {'ai_generate': '2/minute'}):
+            data = {"name": "Dal Makhani", "keywords": "buttery"}
+            r1 = self.client.post(self.ai_menu_url, data, format="json", HTTP_X_TENANT_ID=str(self.restaurant.id))
+            r2 = self.client.post(self.ai_menu_url, data, format="json", HTTP_X_TENANT_ID=str(self.restaurant.id))
+            self.assertEqual(r1.status_code, status.HTTP_200_OK)
+            self.assertEqual(r2.status_code, status.HTTP_200_OK)
+            r3 = self.client.post(self.ai_menu_url, data, format="json", HTTP_X_TENANT_ID=str(self.restaurant.id))
+            self.assertEqual(r3.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+            self.assertIn("Request was throttled", str(r3.data))
+
+    def test_ai_menu_disabled_by_governance_flag(self):
+        from users.models import SystemSetting
+        sys_settings = SystemSetting.get_settings()
+        sys_settings.feature_ai_menu = False
+        sys_settings.save()
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(
+            self.ai_menu_url,
+            {"name": "Biryani"},
+            format="json",
+            HTTP_X_TENANT_ID=str(self.restaurant.id)
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("disabled", response.data["error"])
+
+        # Reset flag
+        sys_settings.feature_ai_menu = True
+        sys_settings.save()
+
+
+
 
 

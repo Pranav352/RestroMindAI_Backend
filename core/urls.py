@@ -9,6 +9,7 @@ from .views import (
     BulkQRGenerateView,
     QRDetailView,
     PublicMenuView,
+    AIMenuGenerateView,
     AdminDashboardStatsView,
     AdminUserViewSet,
     AdminRestaurantViewSet,
@@ -28,6 +29,7 @@ router.register(r'admin/restaurants', AdminRestaurantViewSet, basename='admin-re
 urlpatterns = [
     # Match the public menu first to avoid routing collision with menu-item detail (menu/<pk>/)
     path('menu/public/<int:restaurant_id>/', PublicMenuView.as_view(), name='public-menu'),
+    path('menu/ai-generate-description/', AIMenuGenerateView.as_view(), name='ai-menu-generate'),
     path('qr/generate/', QRGenerateView.as_view(), name='qr-generate'),
     path('qr/bulk-generate/', BulkQRGenerateView.as_view(), name='qr-bulk-generate'),
     path('qr/<int:pk>/', QRDetailView.as_view(), name='qr-detail'),

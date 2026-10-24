@@ -317,6 +317,7 @@ class QRDetailView(generics.RetrieveAPIView):
 
 class PublicMenuView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_scope = 'public_menu'
 
     def get(self, request, restaurant_id):
         # Prefetch categories and menu items in a single query for sub-second performance
@@ -333,6 +334,47 @@ class PublicMenuView(APIView):
 
         serializer = PublicRestaurantSerializer(restaurant, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AIMenuGenerateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, HasTenantAccess, HasActiveSubscription]
+    throttle_scope = 'ai_generate'
+
+    def post(self, request):
+        from users.models import SystemSetting
+        sys_settings = SystemSetting.get_settings()
+        if not sys_settings.feature_ai_menu:
+            return Response(
+                {"error": "AI Menu Auto-Description Engine is currently disabled by platform administration."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        item_name = request.data.get('name', '').strip()
+        category_name = request.data.get('category', '').strip()
+        keywords = request.data.get('keywords', '').strip()
+
+        if not item_name:
+            return Response(
+                {"error": "Item name is required for AI generation."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        cuisine_context = f" for {category_name}" if category_name else ""
+        keyword_context = f" featuring {keywords}" if keywords else ""
+        generated_description = (
+            f"Delight in our chef-curated {item_name}{cuisine_context}{keyword_context}, "
+            "crafted with premium farm-fresh ingredients, aromatic seasonings, and cooked to culinary perfection."
+        )
+        suggested_tags = [tag.strip() for tag in keywords.split(',') if tag.strip()]
+        if not suggested_tags:
+            suggested_tags = ["Chef's Special", "Freshly Made"]
+
+        return Response({
+            "success": True,
+            "name": item_name,
+            "description": generated_description,
+            "suggested_tags": suggested_tags,
+        }, status=status.HTTP_200_OK)
 
 
 class AdminDashboardStatsView(APIView):
@@ -442,6 +484,9 @@ class OrderViewSet(viewsets.ModelViewSet):
     def get_throttles(self):
         if self.action == 'create':
             self.throttle_scope = 'public_orders'
+            return super().get_throttles()
+        elif self.action in ['check_table', 'status']:
+            self.throttle_scope = 'public_menu'
             return super().get_throttles()
         return []
 

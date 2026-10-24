@@ -391,12 +391,20 @@ class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     tracking_token = serializers.UUIDField(required=False, allow_null=True)
     rounds_count = serializers.SerializerMethodField()
+    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    restaurant_address = serializers.CharField(source='restaurant.address', read_only=True)
+    restaurant_phone = serializers.CharField(source='restaurant.phone', read_only=True)
+    restaurant_currency = serializers.CharField(source='restaurant.currency', read_only=True)
 
     class Meta:
         model = Order
         fields = (
             'id', 
             'restaurant', 
+            'restaurant_name',
+            'restaurant_address',
+            'restaurant_phone',
+            'restaurant_currency',
             'table_number', 
             'customer_name', 
             'status', 

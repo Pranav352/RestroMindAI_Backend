@@ -23,10 +23,28 @@ class UserSerializer(serializers.ModelSerializer):
     subscription = SubscriptionSerializer(read_only=True)
     has_recovery_pin = serializers.SerializerMethodField()
     quota_usage = serializers.SerializerMethodField()
+    restaurant = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'role', 'subscription', 'has_recovery_pin', 'avatar', 'settings', 'quota_usage')
+        fields = ('id', 'email', 'first_name', 'role', 'subscription', 'has_recovery_pin', 'avatar', 'settings', 'quota_usage', 'restaurant')
+
+    def get_restaurant(self, obj):
+        if obj.role == 'owner':
+            rest = getattr(obj, 'restaurants', None)
+            if rest is not None:
+                first_rest = rest.first()
+                if first_rest:
+                    return {
+                        'id': first_rest.id,
+                        'name': first_rest.name,
+                        'address': first_rest.address,
+                        'phone': first_rest.phone,
+                        'currency': first_rest.currency,
+                        'tax_percentage': str(first_rest.tax_percentage),
+                        'service_charge_percentage': str(first_rest.service_charge_percentage),
+                    }
+        return None
 
     def get_has_recovery_pin(self, obj):
         return bool(obj.recovery_pin)
